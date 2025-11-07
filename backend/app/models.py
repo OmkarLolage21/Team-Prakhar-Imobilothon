@@ -1,6 +1,6 @@
 from __future__ import annotations
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
-from sqlalchemy import String, Integer, Boolean, Numeric, Text, ForeignKey, DateTime, Enum
+from sqlalchemy import String, Integer, Boolean, Numeric, Text, ForeignKey, DateTime, Enum, JSON
 from sqlalchemy.dialects.postgresql import UUID
 import enum
 import datetime as dt
@@ -109,8 +109,8 @@ class Booking(Base):
     slot_id: Mapped[str | None] = mapped_column(ForeignKey("slots.slot_id"))
     cluster_id: Mapped[str] = mapped_column(String)
     eta_minute: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
-    mode: Mapped[BookingMode] = mapped_column(Enum(BookingMode))
-    status: Mapped[BookingStatus] = mapped_column(Enum(BookingStatus))
+    mode: Mapped[BookingMode] = mapped_column(Enum(BookingMode, native_enum=False))
+    status: Mapped[BookingStatus] = mapped_column(Enum(BookingStatus, native_enum=False))
     p_free_at_hold: Mapped[float | None] = mapped_column(Numeric)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow)
 
@@ -128,7 +128,7 @@ class Session(Base):
     booking_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), ForeignKey("bookings.booking_id"))
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
-    validation_method: Mapped[ValidationMethod | None] = mapped_column(Enum(ValidationMethod))
+    validation_method: Mapped[ValidationMethod | None] = mapped_column(Enum(ValidationMethod, native_enum=False))
     bay_label: Mapped[str | None] = mapped_column(String)
     grace_ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -138,7 +138,7 @@ class Payment(Base):
     booking_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), ForeignKey("bookings.booking_id"))
     amount_authorized: Mapped[float | None] = mapped_column(Numeric)
     amount_captured: Mapped[float | None] = mapped_column(Numeric)
-    status: Mapped[PaymentStatus] = mapped_column(Enum(PaymentStatus))
+    status: Mapped[PaymentStatus] = mapped_column(Enum(PaymentStatus, native_enum=False))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow)
 
 class Alert(Base):
@@ -146,8 +146,17 @@ class Alert(Base):
     alert_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
     entity_type: Mapped[str] = mapped_column(String)
     entity_id: Mapped[str] = mapped_column(String)
-    kind: Mapped[AlertKind] = mapped_column(Enum(AlertKind))
-    severity: Mapped[AlertSeverity] = mapped_column(Enum(AlertSeverity))
+    kind: Mapped[AlertKind] = mapped_column(Enum(AlertKind, native_enum=False))
+    severity: Mapped[AlertSeverity] = mapped_column(Enum(AlertSeverity, native_enum=False))
     message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow)
     resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+class EventsOutbox(Base):
+    __tablename__ = "events_outbox"
+    event_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|published|error
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow)
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))

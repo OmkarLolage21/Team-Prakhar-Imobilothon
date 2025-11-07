@@ -10,7 +10,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
-from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction
+from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction, EventsOutbox
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -21,6 +21,7 @@ class BookingCreateRequest(BaseModel):
     slot_id: str
     eta: str  # ISO
     mode: str = Field(pattern="^(guaranteed|smart_hold)$")
+    window_minutes: int = Field(default=60, ge=5, le=240)
 
 class BookingResponse(BaseModel):
     booking_id: str
@@ -51,17 +52,30 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         cluster_id = next((s["cluster_id"] for s in SLOTS if s["slot_id"] == req.slot_id), None)
 
     # compute p_free using DB predictions (nearest by time)
-    from datetime import datetime
+    from datetime import datetime, timedelta
     eta_dt = datetime.fromisoformat(req.eta.replace("Z", "+00:00"))
-    # nearest for primary slot
-    pr_res = await db.execute(
-        select(SlotPrediction.p_free)
-        .where(SlotPrediction.slot_id == req.slot_id)
-        .order_by(func.abs(func.extract('epoch', SlotPrediction.eta_minute - eta_dt)))
+    window = timedelta(minutes=req.window_minutes)
+    lower = eta_dt - window
+    upper = eta_dt + window
+    # nearest for primary slot using dual before/after within window
+    before_q = await db.execute(
+        select(SlotPrediction)
+        .where(SlotPrediction.slot_id == req.slot_id, SlotPrediction.eta_minute <= eta_dt, SlotPrediction.eta_minute >= lower)
+        .order_by(SlotPrediction.eta_minute.desc())
         .limit(1)
     )
-    p_row = pr_res.scalar_one_or_none()
-    p = float(p_row) if p_row is not None else None
+    before = before_q.scalar_one_or_none()
+    after_q = await db.execute(
+        select(SlotPrediction)
+        .where(SlotPrediction.slot_id == req.slot_id, SlotPrediction.eta_minute >= eta_dt, SlotPrediction.eta_minute <= upper)
+        .order_by(SlotPrediction.eta_minute.asc())
+        .limit(1)
+    )
+    after = after_q.scalar_one_or_none()
+    chosen = before or after
+    if before and after:
+        chosen = before if abs((before.eta_minute - eta_dt).total_seconds()) <= abs((after.eta_minute - eta_dt).total_seconds()) else after
+    p = float(chosen.p_free) if chosen is not None else None
 
     # Try DB persistence
     try:
@@ -98,15 +112,25 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
             alt_ids = [sid for (sid,) in res_slots.all()]
             candidates: List[Dict[str, Any]] = []
             for sid in alt_ids:
-                pr_alt = await db.execute(
-                    select(SlotPrediction.p_free)
-                    .where(SlotPrediction.slot_id == sid)
-                    .order_by(func.abs(func.extract('epoch', SlotPrediction.eta_minute - eta_dt)))
+                bq = await db.execute(
+                    select(SlotPrediction)
+                    .where(SlotPrediction.slot_id == sid, SlotPrediction.eta_minute <= eta_dt, SlotPrediction.eta_minute >= lower)
+                    .order_by(SlotPrediction.eta_minute.desc())
                     .limit(1)
                 )
-                p_alt = pr_alt.scalar_one_or_none()
-                if p_alt is not None:
-                    candidates.append({"slot_id": sid, "confidence": float(p_alt)})
+                aq = await db.execute(
+                    select(SlotPrediction)
+                    .where(SlotPrediction.slot_id == sid, SlotPrediction.eta_minute >= eta_dt, SlotPrediction.eta_minute <= upper)
+                    .order_by(SlotPrediction.eta_minute.asc())
+                    .limit(1)
+                )
+                bpred = bq.scalar_one_or_none()
+                apred = aq.scalar_one_or_none()
+                pick = bpred or apred
+                if bpred and apred:
+                    pick = bpred if abs((bpred.eta_minute - eta_dt).total_seconds()) <= abs((apred.eta_minute - eta_dt).total_seconds()) else apred
+                if pick is not None:
+                    candidates.append({"slot_id": sid, "confidence": float(pick.p_free)})
             candidates.sort(key=lambda x: -x["confidence"])
             backups = candidates[: CONFIG.backups_limit]
             for cand in backups:
@@ -117,6 +141,22 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
                     confidence_at_add=cand.get("confidence"),
                     hold_expires_at=None,
                 ))
+        # Outbox event for booking.created (include backups with confidence)
+        evt_payload = {
+            "booking_id": booking_id,
+            "slot_id": req.slot_id,
+            "eta_minute": req.eta,
+            "mode": req.mode,
+            "status": status.value,
+            "p_free_at_hold": p,
+            "backups": backups,
+            "created_at": dt.datetime.utcnow().isoformat(),
+        }
+        db.add(EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="booking.created",
+            payload=evt_payload,
+        ))
         await db.commit()
         return BookingResponse(
             booking_id=booking_id,
@@ -208,6 +248,7 @@ async def swap(booking_id: str, req: SwapRequest, db: AsyncSession = Depends(get
         b = res_b.scalar_one_or_none()
         if b is None:
             raise HTTPException(status_code=404, detail="booking not found")
+        old_slot_id = b.slot_id or ""
         await db.execute(
             update(Booking)
             .where(Booking.booking_id == booking_id)
@@ -224,6 +265,25 @@ async def swap(booking_id: str, req: SwapRequest, db: AsyncSession = Depends(get
             {"slot_id": c.slot_id, "role": c.role, "confidence": float(c.confidence_at_add) if c.confidence_at_add is not None else None}
             for c in cands if c.role == "backup"
         ]
+        # Outbox event booking.swapped
+        import uuid, datetime as dt
+        swap_evt = EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="booking.swapped",
+            payload={
+                "booking_id": b2.booking_id,
+                "old_slot_id": old_slot_id,
+                "new_slot_id": b2.slot_id,
+                "status": b2.status.value,
+                "mode": b2.mode.value,
+                "eta_minute": b2.eta_minute.isoformat(),
+                "p_free_at_hold": float(b2.p_free_at_hold) if b2.p_free_at_hold is not None else None,
+                "backups": backups,
+                "swapped_at": dt.datetime.utcnow().isoformat(),
+            },
+        )
+        db.add(swap_evt)
+        await db.commit()
         return BookingResponse(
             booking_id=b2.booking_id,
             slot_id=b2.slot_id or "",

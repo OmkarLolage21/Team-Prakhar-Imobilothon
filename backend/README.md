@@ -4,7 +4,9 @@
 
 - FastAPI for HTTP API & ML inference
 - XGBoost model loaded from `backend/model/xgb_model_reduced.pkl`
-- Simple in-memory configs and mock data (no DB yet)
+- Async SQLAlchemy + Postgres (Supabase) for persistence
+- Background agents: predictor (horizon insertion), pricing, incentives, outbox publisher
+- Outbox pattern simulating Kafka events (`events_outbox` table)
 
 ## Quick Start (Windows PowerShell)
 
@@ -19,16 +21,15 @@ pip install -r backend/requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-## Endpoints (Initial)
+## Key Endpoints (Current)
 
-- `GET /` root info
-- `GET /ml/model/info` model manifest
-- `POST /ml/predict` raw batch prediction (body: {"rows": [...]})
-- `GET /ml/predictions?slot_id=S123&eta=2025-11-07T09:30:00Z` single prediction building features
-- `POST /ml/predictions` same via JSON body with overrides
-- `GET /ml/agents/config` / `PUT /ml/agents/config`
-- `POST /auth/login` -> JWT (demo user: demo@user.com / demo)
-- `GET /offers/search?lat=..&lng=..&eta=ISO8601` returns mock ranked offers
+- Root & Health: `GET /`, `GET /health/db`, `GET /health/predictor`
+- ML: `GET /ml/model/info`, `POST /ml/predict`, `GET /ml/predictions`, `GET/PUT /ml/agents/config`
+- Offers: `GET /offers/search?lat=&lng=&eta=&window_minutes=` (DB-driven, nearest prediction window)
+- Bookings: `POST /bookings` (smart_hold or guaranteed, emits `booking.created`), `GET /bookings/{id}`, `POST /bookings/{id}/swap` (emits `booking.swapped`)
+- Sessions: `POST /sessions/start`, `POST /sessions/{id}/validate` (emits `session.validated` + preauth), `POST /sessions/{id}/extend`, `POST /sessions/{id}/end` (auto capture payment)
+- Payments: `POST /payments/preauth`, `POST /payments/{id}/capture`, `POST /payments/{id}/refund` (events: `payment.preauth_ok`, `payment.captured`, `payment.refunded`)
+- Admin: `POST /admin/seed/slots`, `POST /admin/db/indexes`
 
 ## Example Predict Request
 
@@ -47,6 +48,16 @@ POST /ml/predict
 }
 ```
 
+## Event Simulation Flow
+
+1. Create booking (smart_hold lowers confidence triggers backups if `p_free < threshold`).
+2. Start session -> booking status becomes active.
+3. Validate session (QR/NFC/plate) -> emits `session.validated`; auto preauth payment if none.
+4. End session -> booking completed; payment captured using current `dynamic_price` -> emits `payment.captured`.
+5. Refund (optional) -> emits `payment.refunded`.
+
+Outbox worker picks up pending events and marks them published; console logs for visibility.
+
 ## Next Steps (Roadmap)
 
 Phase 1 (Data Core):
@@ -55,22 +66,23 @@ Phase 1 (Data Core):
 2. Implement SQLAlchemy models + CRUD for `slots`, `slot_observations`, `slot_predictions`.
 3. Replace mock offers with DB-driven query (join predictions for requested ETA window).
 
-Phase 2 (Predictor & Reliability Agents): 4. Background Predictor task: every 30 min build features & insert horizon rows into `slot_predictions`. 5. Reliability check: when booking created (smart_hold) evaluate prediction; enqueue backups in `booking_candidate`. 6. Publish Kafka events via outbox inserts (`enqueue_event`).
+Phase 2 (Predictor & Reliability Agents): 4. Background Predictor task: every 30 min build features & insert horizon rows into `slot_predictions`. 5. Reliability check: when booking created (smart_hold) evaluate prediction; enqueue backups in `booking_candidate`. 6. Publish events via outbox inserts.
 
 Phase 3 (Booking & Sessions): 7. Implement booking endpoints (`POST /book`, `GET /bookings/{id}`, swap backups). 8. Session lifecycle endpoints (`/validate`, `/sessions/{id}/extend`, `/sessions/{id}/end`).
 
-Phase 4 (Dynamic Pricing & Incentives): 9. Pricing agent adjusts `slots.dynamic_price` bounded by min/max multipliers; record `pricing_changes`. 10. Incentive agent proposes time-shift / cluster-shift offers stored in `incentives`.
+Phase 4 (Dynamic Pricing & Incentives): 9. Pricing agent adjusts `slots.dynamic_price` based on p_free. 10. Incentive agent emits alerts for low-confidence smart_hold bookings.
 
 Phase 5 (Data Quality & Trust): 11. Populate `slot_health` & `provider_reliability_score`; emit alerts.
 
 Phase 6 (Feature Packs): 12. Indoor navigation, EV pairing, services/add-ons, carbon savings.
 
-Cross-Cutting:
+Cross-Cutting (Future):
 
-- Add Kafka consumer/producer (e.g., aiokafka) using `kafka_bootstrap_servers`.
+- Replace simulated outbox with real Kafka (aiokafka) and mark events published only on broker ack.
 - Introduce caching layer (Redis) for hot predictions/offers.
-- Add metrics (Prometheus) & structured logging.
+- Add metrics (Prometheus) & structured JSON logging.
+- More granular feature flags & config persistence.
 
 ---
 
-Prototype authored automatically; refine as needed.
+Prototype authored automatically; refine as needed. See Event Simulation Flow for full lifecycle.

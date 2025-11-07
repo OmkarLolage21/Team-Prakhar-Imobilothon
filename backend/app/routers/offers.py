@@ -2,7 +2,7 @@ from typing import List
 from fastapi import APIRouter, Query, Depends
 from pydantic import BaseModel
 from app.core.db import get_db, SessionLocal
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Slot, SlotPrediction
 
@@ -20,33 +20,64 @@ class Offer(BaseModel):
     accessible: bool = False
 
 @router.get("/search", response_model=List[Offer])
-async def search_offers(lat: float = Query(...), lng: float = Query(...), eta: str = Query(...), db: AsyncSession = Depends(get_db)):
-    # DB-first: fetch slots and nearest prediction per slot for requested eta. No in-memory fallback.
-    offers: List[Offer] = []
-    # Fetch a handful of slots for demo (geo filtering can be added later)
-    res = await db.execute(select(Slot).limit(20))
-    slots = res.scalars().all()
-    from datetime import datetime
+async def search_offers(
+    lat: float = Query(...),
+    lng: float = Query(...),
+    eta: str = Query(...),
+    window_minutes: int = Query(60, ge=5, le=240),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return offers using bounded nearest prediction (±60m) and dual before/after queries.
+    Hardened logic:
+      1. Bounds time window to avoid very old/far predictions.
+      2. Gets at most one prediction before and one after requested eta, chooses closest.
+      3. Skips slot if no prediction within window.
+    """
+    from datetime import datetime, timedelta
     eta_dt = datetime.fromisoformat(eta.replace("Z", "+00:00"))
+    window = timedelta(minutes=window_minutes)
+    lower = eta_dt - window
+    upper = eta_dt + window
+
+    # Fetch candidate slots (limit for demo)
+    res = await db.execute(select(Slot).limit(50))
+    slots = res.scalars().all()
+    offers: List[Offer] = []
 
     for s in slots:
-        # nearest prediction by absolute time diff
-        diff = func.abs(func.extract('epoch', SlotPrediction.eta_minute - eta_dt))
-        pr_res = await db.execute(
-            select(SlotPrediction.p_free)
-            .where(SlotPrediction.slot_id == s.slot_id)
-            .order_by(diff)
+        # prediction before
+        before_q = await db.execute(
+            select(SlotPrediction)
+            .where(SlotPrediction.slot_id == s.slot_id, SlotPrediction.eta_minute <= eta_dt, SlotPrediction.eta_minute >= lower)
+            .order_by(SlotPrediction.eta_minute.desc())
             .limit(1)
         )
-        p = pr_res.scalar_one_or_none()
-        if p is None:
-            continue  # skip slots without predictions
+        before = before_q.scalar_one_or_none()
+        # prediction after
+        after_q = await db.execute(
+            select(SlotPrediction)
+            .where(SlotPrediction.slot_id == s.slot_id, SlotPrediction.eta_minute >= eta_dt, SlotPrediction.eta_minute <= upper)
+            .order_by(SlotPrediction.eta_minute.asc())
+            .limit(1)
+        )
+        after = after_q.scalar_one_or_none()
+        chosen = None
+        if before and after:
+            # choose closer by absolute time delta
+            if abs((before.eta_minute - eta_dt).total_seconds()) <= abs((after.eta_minute - eta_dt).total_seconds()):
+                chosen = before
+            else:
+                chosen = after
+        else:
+            chosen = before or after
+        if not chosen:
+            continue  # no prediction in window
         offers.append(Offer(
             slot_id=s.slot_id,
             cluster_id=s.cluster_id,
-            distance_m=200,  # placeholder until geo
+            distance_m=200,
             eta_minute=eta,
-            p_free=float(p),
+            p_free=float(chosen.p_free),
             price=float(s.dynamic_price),
             ev=bool(s.is_ev),
             accessible=bool(s.is_accessible),

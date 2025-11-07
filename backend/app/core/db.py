@@ -80,13 +80,16 @@ engine = None
 SessionLocal: sessionmaker[AsyncSession] | None = None
 
 def _add_ps_cache_disable(url: str) -> str:
-    """Append prepared statement cache disabling to URL query for asyncpg dialect.
-    SQLAlchemy asyncpg dialect recognizes 'prepared_statement_cache_size'.
+    """Append parameters to disable prepared statements under PgBouncer.
+    For asyncpg, the critical flag is statement_cache_size=0. We also include
+    prepared_statement_cache_size=0 for SQLAlchemy dialects that read it.
     """
     try:
         parsed = urlparse(url)
         q = parse_qs(parsed.query)
-        # If not provided, set to 0
+        # Ensure both keys are present in URL so either layer can pick them up
+        if "statement_cache_size" not in q:
+            q["statement_cache_size"] = ["0"]
         if "prepared_statement_cache_size" not in q:
             q["prepared_statement_cache_size"] = ["0"]
         new_query = urlencode([(k, v0) for k, vals in q.items() for v0 in vals]) if q else ""
@@ -138,6 +141,11 @@ if _DATABASE_URL:
     connect_args["statement_cache_size"] = 0  # asyncpg driver cache
     # Also set dialect-preferred prepared statement cache to 0 via URL; connect_args may ignore this
     connect_args.setdefault("prepared_statement_cache_size", 0)
+    # Log connect_args of interest
+    try:
+        print(f"[db] connect_args: statement_cache_size={connect_args.get('statement_cache_size')} prepared_statement_cache_size={connect_args.get('prepared_statement_cache_size')}")
+    except Exception:
+        pass
     # Debug print of final URL parameters (safe: no password output) for verification
     try:
         parsed_dbg = urlparse(async_url)
@@ -145,7 +153,16 @@ if _DATABASE_URL:
     except Exception:
         pass
     try:
-        engine = create_async_engine(async_url, future=True, echo=False, pool_pre_ping=True, connect_args=connect_args)
+        # Use NullPool when behind PgBouncer to avoid double-pooling and reduce prepared statement reuse risk
+        from sqlalchemy.pool import NullPool
+        engine = create_async_engine(
+            async_url,
+            future=True,
+            echo=False,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+            connect_args=connect_args,
+        )
         SessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False, autoflush=False, autocommit=False)
     except Exception as e:
         print("[db] Engine creation failed:", e)

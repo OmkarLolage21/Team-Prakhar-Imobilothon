@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.feature_builder import build_features
 from app.services.model_service import model_service
-from app.services.inmemory_store import SLOTS as MEM_SLOTS
+# Removed memory fallback import for DB-only fetch phase
 from app.core.db import SessionLocal
 from app.models import Slot, SlotPrediction
 
@@ -37,28 +37,26 @@ async def run_once(horizon_min: int = 60, step_min: int = 15):
     now = datetime.now(timezone.utc)
     etas = [now + timedelta(minutes=m) for m in range(step_min, horizon_min + 1, step_min)]
 
-    # 1) Determine slots source: DB if available and non-empty, else in-memory
+    # 1) Determine slots source: DB only (memory fallback removed)
     slots: List[Dict[str, Any]] = []
-    if SessionLocal is not None:
-        try:
-            async with SessionLocal() as db:  # type: ignore
-                res = await db.execute(select(Slot).limit(100))
-                db_slots = res.scalars().all()
-                if db_slots:
-                    for s in db_slots:
-                        slots.append({
-                            "slot_id": s.slot_id,
-                            "cluster_id": s.cluster_id,
-                            "base_price": float(s.base_price),
-                            "dynamic_price": float(s.dynamic_price),
-                        })
-        except Exception as e:
-            print("[predictor] DB slot fetch failed, falling back to memory:", e)
-    if not slots:
-        slots = [
-            {"slot_id": s["slot_id"], "cluster_id": s["cluster_id"], "base_price": s["base_price"], "dynamic_price": s["dynamic_price"]}
-            for s in MEM_SLOTS
-        ]
+    if SessionLocal is None:
+        return  # DB not ready; skip this cycle
+    try:
+        async with SessionLocal() as db:  # type: ignore
+            res = await db.execute(select(Slot).limit(500))
+            db_slots = res.scalars().all()
+            if not db_slots:
+                return  # no slots yet; wait for seed
+            for s in db_slots:
+                slots.append({
+                    "slot_id": s.slot_id,
+                    "cluster_id": s.cluster_id,
+                    "base_price": float(s.base_price),
+                    "dynamic_price": float(s.dynamic_price),
+                })
+    except Exception as e:
+        print("[predictor] DB slot fetch failed:", e)
+        return
 
     # 2) Build feature rows
     rows: List[Dict[str, Any]] = []
