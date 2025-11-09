@@ -1,11 +1,29 @@
+"use client"
+
+import { useSessions } from "@/hooks/use-sessions"
+import { formatINR } from "@/lib/utils"
+
 export function SessionsTable() {
-  const sessions = [
-    { id: "S001", customer: "user1", lot: "Lot A", duration: "2h 34m", amount: "$12.50", status: "Active" },
-    { id: "S002", customer: "user2", lot: "Lot B", duration: "1h 15m", amount: "$6.25", status: "Active" },
-    { id: "S003", customer: "user3", lot: "Lot C", duration: "45m", amount: "$3.75", status: "Completed" },
-    { id: "S004", customer: "user4", lot: "Lot A", duration: "3h 22m", amount: "$16.75", status: "Active" },
-    { id: "S005", customer: "user5", lot: "Lot B", duration: "30m", amount: "$2.50", status: "Completed" },
-  ]
+  // Use live sessions (no recent ended) for recent active/completed display
+  const { sessions } = useSessions(50, 0)
+  const rows = sessions.slice(0, 15).map((s) => {
+    // duration formatting
+    const minutes = s.duration_minutes ?? 0
+    const h = Math.floor(minutes / 60)
+    const m = minutes % 60
+    const duration = minutes ? `${h}h ${m}m` : "--"
+    const amountSource = s.amount_captured ?? s.amount_authorized ?? s.cost_estimated ?? null
+    const amount = amountSource != null ? formatINR(amountSource, { showZero: true }) : "--"
+    const status = s.ended_at ? "Completed" : "Active"
+    return {
+      id: s.session_id.slice(0, 8),
+      customer: s.customer_email ? s.customer_email.split("@")[0] : "anon",
+      lot: s.lot_name || "--",
+      duration,
+      amount,
+      status,
+    }
+  })
 
   return (
     <div className="bg-card rounded-lg border border-border p-6">
@@ -23,7 +41,7 @@ export function SessionsTable() {
             </tr>
           </thead>
           <tbody>
-            {sessions.map((session) => (
+            {rows.map((session) => (
               <tr key={session.id} className="border-b border-border hover:bg-muted/50 transition">
                 <td className="py-3 px-4 text-foreground font-medium">{session.id}</td>
                 <td className="py-3 px-4 text-foreground">{session.customer}</td>

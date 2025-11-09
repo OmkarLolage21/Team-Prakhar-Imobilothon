@@ -1,11 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "@/lib/api";
+import { api } from "@/lib/api";
 
 export interface LotItem {
   id: string;
   name: string;
   location?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   capacity: number;
   occupancy: number;
   amenities: string[];
@@ -20,9 +22,7 @@ export function useLots(): { lots: LotItem[]; loading: boolean; error: string | 
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/inventory/lots`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`failed: ${res.status}`);
-      const data: LotItem[] = await res.json();
+      const data: LotItem[] = await api.getLots();
       setLots(data);
     } catch (e: any) {
       setError(e.message || "Failed to load lots");
@@ -33,6 +33,8 @@ export function useLots(): { lots: LotItem[]; loading: boolean; error: string | 
 
   useEffect(() => {
     fetchData();
+    const id = setInterval(fetchData, 30000); // auto refresh every 30s
+    return () => clearInterval(id);
   }, []);
 
   return { lots, loading, error, refetch: fetchData };

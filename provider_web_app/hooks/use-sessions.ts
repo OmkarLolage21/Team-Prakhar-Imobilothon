@@ -9,7 +9,7 @@ interface UseSessionsResult {
   refetch: () => void;
 }
 
-export function useSessions(limit = 100): UseSessionsResult {
+export function useSessions(limit = 100, recentHours = 0): UseSessionsResult {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +18,7 @@ export function useSessions(limit = 100): UseSessionsResult {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getLiveSessions(limit);
+  const data = await api.getLiveSessions(limit, recentHours);
       setSessions(data);
     } catch (e: any) {
       setError(e.message || "Failed to load sessions");
@@ -31,7 +31,7 @@ export function useSessions(limit = 100): UseSessionsResult {
     fetchData();
     const id = setInterval(fetchData, 15_000);
     return () => clearInterval(id);
-  }, [limit]);
+  }, [limit, recentHours]);
 
   return { sessions, loading, error, refetch: fetchData };
 }

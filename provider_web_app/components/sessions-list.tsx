@@ -58,10 +58,13 @@ export function SessionsList({ sessions, selectedSession, onSelectSession }: Ses
                         <span className="text-chart-1 font-medium">Active</span>
                       </>
                     )}
+                    {session.extended && (
+                      <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">Extended</span>
+                    )}
                   </div>
                 </td>
                 <td className="py-3 px-4">
-                  <button className="p-1 hover:bg-muted rounded transition text-foreground">
+                  <button className="p-1 hover:bg-muted rounded transition text-foreground" title="Call customer" aria-label="Call customer">
                     <Phone size={16} />
                   </button>
                 </td>

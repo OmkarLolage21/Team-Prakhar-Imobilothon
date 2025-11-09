@@ -24,6 +24,21 @@ export function BookingsLedger() {
     })
   }, [bookings, searchTerm, filterStatus])
 
+  const handleExport = () => {
+    const headers = ["booking_id","customer","email","lot","startDate","endDate","duration","amount","paymentStatus","status"]
+    const rows = filteredBookings.map(b => headers.map(h => (b as any)[h] ?? ""))
+    const csv = [headers.join(","), ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(","))].join("\n")
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `bookings_export_${Date.now()}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
@@ -78,7 +93,7 @@ export function BookingsLedger() {
               />
             </div>
 
-            <button className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition">
+            <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition" aria-label="Export bookings CSV">
               <Download size={18} />
               Export
             </button>

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react"
 import { TrendingUp, AlertCircle, CheckCircle, Clock } from "lucide-react"
 import { API_BASE } from "@/lib/api"
+import { formatINR } from "@/lib/utils"
 
 interface Summary {
   total_revenue: number
@@ -31,7 +32,7 @@ export function PaymentsSummary() {
   const cards = [
     {
       label: "Total Revenue",
-      value: data ? `$${data.total_revenue.toFixed(2)}` : "--",
+      value: data ? formatINR(data.total_revenue) : "--",
       change: "",
       icon: TrendingUp,
       color: "text-chart-1",
@@ -45,7 +46,7 @@ export function PaymentsSummary() {
     },
     {
       label: "Pending Payments",
-      value: data ? `$${data.pending_amount.toFixed(2)}` : "--",
+      value: data ? formatINR(data.pending_amount) : "--",
       change: "",
       icon: Clock,
       color: "text-chart-4",

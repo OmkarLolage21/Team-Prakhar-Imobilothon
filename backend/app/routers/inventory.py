@@ -14,6 +14,8 @@ class LotItem(BaseModel):
     id: str
     name: str
     location: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     capacity: int
     occupancy: int
     amenities: List[str] = []
@@ -68,6 +70,8 @@ async def list_lots(db: AsyncSession = Depends(get_db)):
             id=loc.location_id,
             name=loc.name,
             location=loc.address,
+            latitude=float(loc.entrance_lat) if loc.entrance_lat is not None else None,
+            longitude=float(loc.entrance_lng) if loc.entrance_lng is not None else None,
             capacity=capacity,
             occupancy=occupancy,
             amenities=meta.get("amenities", []),

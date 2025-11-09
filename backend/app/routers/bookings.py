@@ -6,11 +6,11 @@ from app.services.inmemory_store import (
     SLOTS, nearest_prediction
 )
 from app.schemas.ml import AgentsConfig  # reuse config defaults for reliability threshold
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, literal_column
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
-from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction, EventsOutbox, Payment, PaymentStatus, Location
+from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction, EventsOutbox, Payment, PaymentStatus, Location, Session, AppUser
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -52,51 +52,85 @@ class BookingLedgerItem(BaseModel):
 
 @router.get("/recent", response_model=List[BookingLedgerItem])
 async def recent(limit: int = 50, db: AsyncSession = Depends(get_db)):
-    """Return recent bookings with basic payment info for provider UI."""
+    """Return recent bookings with joined user, location, payment and session info (optimized single query)."""
     try:
-        res = await db.execute(
-            select(Booking).order_by(Booking.created_at.desc()).limit(limit)
+        # Build a LEFT JOIN query to avoid N+1 lookups
+        q = (
+            select(
+                Booking.booking_id,
+                Booking.slot_id,
+                Booking.cluster_id,
+                Booking.eta_minute,
+                Booking.status,
+                Booking.created_at,
+                AppUser.email.label("user_email"),
+                Location.name.label("lot_name"),
+                Payment.amount_captured,
+                Payment.amount_authorized,
+                Payment.status.label("pay_status"),
+                Session.started_at.label("sess_started"),
+                Session.ended_at.label("sess_ended"),
+            )
+            .select_from(Booking)
+            .outerjoin(AppUser, AppUser.user_id == Booking.user_id)
+            .outerjoin(Slot, Slot.slot_id == Booking.slot_id)
+            .outerjoin(Location, Location.location_id == Slot.location_id)
+            .outerjoin(Payment, Payment.booking_id == Booking.booking_id)
+            .outerjoin(Session, Session.booking_id == Booking.booking_id)
+            .order_by(Booking.created_at.desc())
+            .limit(limit)
         )
-        rows = res.scalars().all()
+        res = await db.execute(q)
+        rows = res.all()
         items: List[BookingLedgerItem] = []
-        for b in rows:
-            lot_name = None
-            if b.slot_id:
-                s_res = await db.execute(select(Slot).where(Slot.slot_id == b.slot_id))
-                s = s_res.scalar_one_or_none()
-                if s and s.location_id:
-                    l_res = await db.execute(select(Location).where(Location.location_id == s.location_id))
-                    loc = l_res.scalar_one_or_none()
-                    if loc:
-                        lot_name = loc.name
-            pay_res = await db.execute(select(Payment).where(Payment.booking_id == b.booking_id))
-            p = pay_res.scalar_one_or_none()
-            amount = None
-            p_status = None
-            if p:
-                if p.amount_captured is not None:
-                    amount = float(p.amount_captured)
-                elif p.amount_authorized is not None:
-                    amount = float(p.amount_authorized)
-                p_status = p.status.value
-            # very simple duration placeholder
-            duration = None
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        for r in rows:
+            (booking_id, slot_id, cluster_id, eta_minute, status, created_at, user_email, lot_name,
+             amount_captured, amount_authorized, pay_status, sess_started, sess_ended) = r
+            # Amount resolution
+            amount_val = None
+            if amount_captured is not None:
+                amount_val = float(amount_captured)
+            elif amount_authorized is not None:
+                amount_val = float(amount_authorized)
+            # Payment status mapping
+            payment_status_ui = None
+            if pay_status is not None:
+                if pay_status == PaymentStatus.captured:
+                    payment_status_ui = "paid"
+                elif pay_status == PaymentStatus.preauth_ok:
+                    payment_status_ui = "pending"
+                elif pay_status in (PaymentStatus.cancelled, PaymentStatus.refunded):
+                    payment_status_ui = "failed" if pay_status == PaymentStatus.cancelled else "paid"
+            # Duration: if session started
+            duration_str = None
+            if sess_started is not None:
+                end_ref = sess_ended or now
+                delta = end_ref - sess_started
+                mins = int(delta.total_seconds() // 60)
+                if mins >= 60:
+                    hours = mins // 60
+                    rem = mins % 60
+                    duration_str = f"{hours}h {rem}m" if rem else f"{hours}h"
+                else:
+                    duration_str = f"{mins}m"
+            # Customer display (local part of email)
+            customer_name = None
+            if user_email:
+                customer_name = user_email.split("@")[0]
             items.append(BookingLedgerItem(
-                id=b.booking_id,
-                customer=None,
-                email=None,
-                lot=lot_name or (b.cluster_id or None),
-                startDate=b.eta_minute.isoformat() if b.eta_minute else None,
-                endDate=None,
-                duration=duration,
-                amount=(f"${amount:.2f}" if amount is not None else None),
-                paymentMethod="Card" if p else None,
-                status=b.status.value if b.status else None,
-                paymentStatus=(
-                    "paid" if p_status == PaymentStatus.captured.value else (
-                        "pending" if p_status == PaymentStatus.preauth_ok.value else ("failed" if p_status == PaymentStatus.cancelled.value else None)
-                    )
-                ),
+                id=booking_id,
+                customer=customer_name,
+                email=user_email,
+                lot=lot_name or cluster_id,
+                startDate=eta_minute.isoformat() if eta_minute else None,
+                endDate=sess_ended.isoformat() if sess_ended else None,
+                duration=duration_str,
+                amount=(f"${amount_val:.2f}" if amount_val is not None else None),
+                paymentMethod=("Card" if amount_val is not None else None),
+                status=status.value if status else None,
+                paymentStatus=payment_status_ui,
             ))
         return items
     except SQLAlchemyError as e:

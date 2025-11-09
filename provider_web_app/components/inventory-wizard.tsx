@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { api } from "@/lib/api"
 import { ChevronRight, ChevronLeft, MapPin, Settings, Check } from "lucide-react"
 import { InventoryBasicInfo } from "@/components/inventory-steps/basic-info"
@@ -25,6 +26,7 @@ export function InventoryWizard() {
     evChargers: "",
     amenities: [] as string[],
   })
+  const router = useRouter()
 
   const steps = [
     { title: "Basic Info", icon: Settings },
@@ -51,11 +53,32 @@ export function InventoryWizard() {
   }
 
   const handleSubmit = async () => {
+    // If no lat/lng provided, geocode using geocode.xyz
+    let lat = formData.latitude ? Number(formData.latitude) : undefined
+    let lng = formData.longitude ? Number(formData.longitude) : undefined
+    const fullAddress = `${formData.address}, ${formData.city}, ${formData.state} ${formData.zipCode}`.trim()
+    if ((!lat || !lng) && fullAddress) {
+      try {
+        const res = await fetch(`https://geocode.xyz?locate=${encodeURIComponent(fullAddress)}&json=1`)
+        if (res.ok) {
+          const data = await res.json()
+          const plat = parseFloat(data.latt)
+          const plng = parseFloat(data.longt)
+          if (!Number.isNaN(plat) && !Number.isNaN(plng)) {
+            lat = plat
+            lng = plng
+          }
+        }
+      } catch (_) {
+        // ignore geocode failure; backend will accept undefined and UI can edit later
+      }
+    }
+
     const payload = {
       name: formData.name,
-      address: `${formData.address}, ${formData.city}, ${formData.state} ${formData.zipCode}`.trim(),
-      latitude: formData.latitude ? Number(formData.latitude) : undefined,
-      longitude: formData.longitude ? Number(formData.longitude) : undefined,
+      address: fullAddress,
+      latitude: lat,
+      longitude: lng,
       totalSpaces: Number(formData.totalSpaces || 0),
       handicapSpaces: Number(formData.handicapSpaces || 0),
       evChargers: Number(formData.evChargers || 0),
@@ -79,6 +102,8 @@ export function InventoryWizard() {
         evChargers: "",
         amenities: [],
       })
+      // Navigate back to inventory to see the new lot
+      router.push("/inventory")
     } catch (e: any) {
       alert(`Failed to create lot: ${e.message || e}`)
     }

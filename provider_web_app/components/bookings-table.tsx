@@ -1,6 +1,7 @@
 "use client"
 
 import { ChevronRight, AlertCircle, CheckCircle, Clock } from "lucide-react"
+import Link from "next/link"
 
 interface BookingsTableProps {
   bookings: any[]
@@ -64,9 +65,9 @@ export function BookingsTable({ bookings }: BookingsTableProps) {
                   </div>
                 </td>
                 <td className="py-3 px-4">
-                  <button className="p-1 hover:bg-muted rounded transition text-foreground">
+                  <Link href={`/bookings/${booking.id}`} aria-label={`View booking ${booking.id}`} className="inline-flex p-1 hover:bg-muted rounded transition text-foreground">
                     <ChevronRight size={18} />
-                  </button>
+                  </Link>
                 </td>
               </tr>
             ))}

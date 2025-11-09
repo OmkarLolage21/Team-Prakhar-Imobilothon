@@ -7,6 +7,7 @@ import { OccupancyAnalytics } from "@/components/analytics/occupancy-analytics"
 import { CustomerAnalytics } from "@/components/analytics/customer-analytics"
 import { PeakHoursAnalytics } from "@/components/analytics/peak-hours-analytics"
 import { useRevenue } from "@/hooks/use-revenue"
+import { formatINR } from "@/lib/utils"
 
 export function AnalyticsDashboard() {
   const [timeRange, setTimeRange] = useState("30days")
@@ -41,7 +42,7 @@ export function AnalyticsDashboard() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-card rounded-lg border border-border p-6">
           <p className="text-sm text-muted-foreground mb-2">Avg Revenue/Day</p>
-          <p className="text-3xl font-bold text-chart-1">${avgRevenue.toLocaleString()}</p>
+          <p className="text-3xl font-bold text-chart-1">{formatINR(avgRevenue, { showZero: true })}</p>
           <p className="text-xs text-chart-1 mt-2">vs last period</p>
         </div>
         <div className="bg-card rounded-lg border border-border p-6">

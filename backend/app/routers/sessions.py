@@ -16,6 +16,8 @@ from app.models import (
     Payment,
     PaymentStatus,
     Slot,
+    Location,
+    AppUser,
     EventsOutbox,
 )
 
@@ -38,30 +40,107 @@ class SessionResponse(BaseModel):
     validation_method: Optional[str]
     bay_label: Optional[str]
     grace_ends_at: Optional[str]
+    # enriched fields for UI
+    customer_email: Optional[str] = None
+    lot_name: Optional[str] = None
+    lot_lat: Optional[float] = None
+    lot_lng: Optional[float] = None
+    slot_id: Optional[str] = None
+    dynamic_price: Optional[float] = None
+    payment_status: Optional[str] = None
+    amount_authorized: Optional[float] = None
+    amount_captured: Optional[float] = None
+    duration_minutes: Optional[int] = None
+    cost_estimated: Optional[float] = None
+    # basic contact derived for demo notifications
+    customer_phone: Optional[str] = None
 
 
 @router.get("/live", response_model=list[SessionResponse])
-async def live(limit: int = 100, db: AsyncSession = Depends(get_db)):
-    """Return active (not ended) sessions for provider UI."""
-    res = await db.execute(
-        select(SessionModel)
-        .where(SessionModel.ended_at.is_(None))
+async def live(limit: int = 100, recent_hours: int = 0, db: AsyncSession = Depends(get_db)):
+    """Return active (and optionally recently ended) sessions enriched with booking, payment and location info.
+
+    Args:
+        limit: max rows
+        recent_hours: if >0 include sessions ended within this many hours along with active sessions.
+    """
+    now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    cutoff = now - dt.timedelta(hours=recent_hours) if recent_hours > 0 else None
+    # Build a single joined query to avoid N+1
+    base_filters = []
+    if cutoff is None:
+        base_filters.append(SessionModel.ended_at.is_(None))
+    else:
+        base_filters.append((SessionModel.ended_at.is_(None)) | (SessionModel.ended_at >= cutoff))
+
+    q = (
+        select(
+            SessionModel,
+            Booking,
+            Slot,
+            Location,
+            Payment,
+            AppUser,
+        )
+        .join(Booking, Booking.booking_id == SessionModel.booking_id, isouter=True)
+        .join(AppUser, Booking.user_id == AppUser.user_id, isouter=True)
+        .join(Slot, Booking.slot_id == Slot.slot_id, isouter=True)
+        .join(Location, Slot.location_id == Location.location_id, isouter=True)
+        .join(Payment, Payment.booking_id == Booking.booking_id, isouter=True)
+        .where(*base_filters)
         .order_by(SessionModel.started_at.desc())
         .limit(limit)
     )
-    rows = res.scalars().all()
-    return [
-        SessionResponse(
-            session_id=s.session_id,
-            booking_id=s.booking_id,
-            started_at=s.started_at.isoformat() if s.started_at else None,
-            ended_at=s.ended_at.isoformat() if s.ended_at else None,
-            validation_method=s.validation_method.value if s.validation_method else None,
-            bay_label=s.bay_label,
-            grace_ends_at=s.grace_ends_at.isoformat() if s.grace_ends_at else None,
+    res = await db.execute(q)
+    rows = res.all()
+    payload: list[SessionResponse] = []
+    for s, b, slot, loc, pay, user in rows:
+        # duration in minutes (if ended use ended_at else now)
+        duration_minutes: Optional[int]
+        if s.started_at:
+            end_ref = s.ended_at or now
+            # Clamp negative differences to 0 in case of clock skew or future start times
+            seconds = max(0, (end_ref - s.started_at).total_seconds())
+            # Floor minutes for ended sessions; for active ones ensure at least 1 minute once >0s have elapsed
+            base_minutes = int(seconds // 60)
+            if s.ended_at is None and base_minutes == 0 and seconds > 0:
+                duration_minutes = 1
+            else:
+                duration_minutes = base_minutes
+        else:
+            duration_minutes = None
+        # cost estimate logic
+        if pay and pay.amount_authorized is not None:
+            cost_estimated = float(pay.amount_authorized)
+        elif slot and slot.dynamic_price is not None and duration_minutes is not None:
+            hours = max(1, duration_minutes // 60 or 1)
+            cost_estimated = float(slot.dynamic_price) * hours
+        else:
+            cost_estimated = None
+        payload.append(
+            SessionResponse(
+                session_id=s.session_id,
+                booking_id=s.booking_id,
+                started_at=s.started_at.isoformat() if s.started_at else None,
+                ended_at=s.ended_at.isoformat() if s.ended_at else None,
+                validation_method=s.validation_method.value if s.validation_method else None,
+                bay_label=s.bay_label,
+                grace_ends_at=s.grace_ends_at.isoformat() if s.grace_ends_at else None,
+                customer_email=getattr(user, "email", None),
+                customer_phone=(getattr(user, "email", "")[:10] if getattr(user, "email", None) else None),
+                lot_name=getattr(loc, "name", None),
+                lot_lat=float(loc.entrance_lat) if loc and loc.entrance_lat is not None else None,
+                lot_lng=float(loc.entrance_lng) if loc and loc.entrance_lng is not None else None,
+                slot_id=getattr(slot, "slot_id", None),
+                dynamic_price=float(slot.dynamic_price) if slot and slot.dynamic_price is not None else None,
+                payment_status=(pay.status.value if pay and pay.status else None),
+                amount_authorized=(float(pay.amount_authorized) if pay and pay.amount_authorized is not None else None),
+                amount_captured=(float(pay.amount_captured) if pay and pay.amount_captured is not None else None),
+                duration_minutes=duration_minutes,
+                cost_estimated=cost_estimated,
+            )
         )
-        for s in rows
-    ]
+    return payload
 
 
 @router.post("/start", response_model=SessionResponse)
@@ -292,3 +371,28 @@ async def end(session_id: str, db: AsyncSession = Depends(get_db)):
         bay_label=sess2.bay_label,
         grace_ends_at=sess2.grace_ends_at.isoformat() if sess2.grace_ends_at else None,
     )
+
+
+class AlertRequest(BaseModel):
+    message: str
+
+
+@router.post("/{session_id}/alert")
+async def send_alert(session_id: str, req: AlertRequest, db: AsyncSession = Depends(get_db)):
+    """Demo endpoint: emit an event to outbox to simulate sending an SMS/notification to the driver."""
+    res = await db.execute(select(SessionModel).where(SessionModel.session_id == session_id))
+    sess = res.scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    db.add(EventsOutbox(
+        event_id=str(uuid.uuid4()),
+        event_type="session.alert",
+        payload={
+            "session_id": session_id,
+            "booking_id": sess.booking_id,
+            "message": req.message,
+            "at": dt.datetime.utcnow().isoformat(),
+        },
+    ))
+    await db.commit()
+    return {"ok": True}

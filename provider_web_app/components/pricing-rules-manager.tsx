@@ -86,7 +86,7 @@ export function PricingRulesManager() {
                   <h3 className="font-semibold text-foreground">{tier.name}</h3>
                   <p className="text-sm text-muted-foreground">{tier.description}</p>
                   <p className="text-lg font-bold text-chart-1 mt-1">
-                    ${tier.rate.toFixed(2)} <span className="text-sm text-muted-foreground">{tier.duration}</span>
+                    ₹{tier.rate.toFixed(2)} <span className="text-sm text-muted-foreground">{tier.duration}</span>
                   </p>
                 </div>
                 <div className="flex gap-2">
