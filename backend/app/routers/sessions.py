@@ -43,6 +43,7 @@ class SessionResponse(BaseModel):
     # enriched fields for UI
     customer_email: Optional[str] = None
     lot_name: Optional[str] = None
+    lot_id: Optional[str] = None
     lot_lat: Optional[float] = None
     lot_lng: Optional[float] = None
     slot_id: Optional[str] = None
@@ -117,29 +118,28 @@ async def live(limit: int = 100, recent_hours: int = 0, db: AsyncSession = Depen
             cost_estimated = float(slot.dynamic_price) * hours
         else:
             cost_estimated = None
-        payload.append(
-            SessionResponse(
-                session_id=s.session_id,
-                booking_id=s.booking_id,
-                started_at=s.started_at.isoformat() if s.started_at else None,
-                ended_at=s.ended_at.isoformat() if s.ended_at else None,
-                validation_method=s.validation_method.value if s.validation_method else None,
-                bay_label=s.bay_label,
-                grace_ends_at=s.grace_ends_at.isoformat() if s.grace_ends_at else None,
-                customer_email=getattr(user, "email", None),
-                customer_phone=(getattr(user, "email", "")[:10] if getattr(user, "email", None) else None),
-                lot_name=getattr(loc, "name", None),
-                lot_lat=float(loc.entrance_lat) if loc and loc.entrance_lat is not None else None,
-                lot_lng=float(loc.entrance_lng) if loc and loc.entrance_lng is not None else None,
-                slot_id=getattr(slot, "slot_id", None),
-                dynamic_price=float(slot.dynamic_price) if slot and slot.dynamic_price is not None else None,
-                payment_status=(pay.status.value if pay and pay.status else None),
-                amount_authorized=(float(pay.amount_authorized) if pay and pay.amount_authorized is not None else None),
-                amount_captured=(float(pay.amount_captured) if pay and pay.amount_captured is not None else None),
-                duration_minutes=duration_minutes,
-                cost_estimated=cost_estimated,
-            )
-        )
+        payload.append(SessionResponse(
+            session_id=s.session_id,
+            booking_id=s.booking_id,
+            started_at=s.started_at.isoformat() if s.started_at else None,
+            ended_at=s.ended_at.isoformat() if s.ended_at else None,
+            validation_method=s.validation_method.value if s.validation_method else None,
+            bay_label=s.bay_label,
+            grace_ends_at=s.grace_ends_at.isoformat() if s.grace_ends_at else None,
+            customer_email=getattr(user, "email", None),
+            customer_phone=(getattr(user, "email", "")[:10] if getattr(user, "email", None) else None),
+            lot_name=getattr(loc, "name", None),
+            lot_id=getattr(loc, "location_id", None),
+            lot_lat=float(loc.entrance_lat) if loc and loc.entrance_lat is not None else None,
+            lot_lng=float(loc.entrance_lng) if loc and loc.entrance_lng is not None else None,
+            slot_id=getattr(slot, "slot_id", None),
+            dynamic_price=float(slot.dynamic_price) if slot and slot.dynamic_price is not None else None,
+            payment_status=(pay.status.value if pay and pay.status else None),
+            amount_authorized=(float(pay.amount_authorized) if pay and pay.amount_authorized is not None else None),
+            amount_captured=(float(pay.amount_captured) if pay and pay.amount_captured is not None else None),
+            duration_minutes=duration_minutes,
+            cost_estimated=cost_estimated,
+        ))
     return payload
 
 

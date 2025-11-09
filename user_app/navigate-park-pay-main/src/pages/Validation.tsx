@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -7,25 +7,70 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { QrCode, Smartphone, Car, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { startSession, getIndoorPath, type NavPath } from "@/lib/api";
 
 const Validation = () => {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  const bookingId = search.get('booking_id');
   const [isValidating, setIsValidating] = useState(false);
   const [plateNumber, setPlateNumber] = useState("");
+  const [pairing, setPairing] = useState<{charger_id:string; est_kwh:number; est_time_min:number; confidence:number}|null>(null);
+  const [origin, setOrigin] = useState<{lat:number; lng:number} | null>(null);
+  const [indoorPath, setIndoorPath] = useState<NavPath | null>(null);
+  const [gettingIndoor, setGettingIndoor] = useState(false);
 
-  const handleValidate = (method: string) => {
+  useEffect(()=>{
+    // Load EV pairing info, if user came from booking
+    try {
+      if (!bookingId) return;
+      const raw = localStorage.getItem(`ev_pairing_${bookingId}`);
+      if (raw) setPairing(JSON.parse(raw));
+    } catch {}
+  }, [bookingId]);
+
+  useEffect(()=>{
+    if (!navigator.geolocation) return;
+    const id = navigator.geolocation.watchPosition(
+      pos => setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+    );
+    return () => { try { navigator.geolocation.clearWatch(id); } catch {} };
+  }, []);
+
+  const handleGuideToBay = async () => {
+    if (!origin || !bookingId) return;
+    try {
+      setGettingIndoor(true);
+      // For MVP, use bookingId to fetch booking slot via a quick endpoint would be ideal; for now, we can't resolve slot here, so guide from current to a placeholder bay using session later.
+      // As a stopgap, call with a fake slot_id string and still show sample path.
+      const path = await getIndoorPath(origin.lat, origin.lng, 'slot-from-booking');
+      setIndoorPath(path);
+    } catch { setIndoorPath(null); }
+    finally { setGettingIndoor(false); }
+  };
+
+  const handleValidate = async (method: string) => {
+    if (!bookingId) {
+      toast.error('Missing booking');
+      return;
+    }
     setIsValidating(true);
     toast.loading("Validating...");
-    
-    setTimeout(() => {
-      setIsValidating(false);
+    try {
+      const sess = await startSession(bookingId, method);
       toast.dismiss();
-      toast.success("Validation successful! Bay: L2-A15");
-      
+      toast.success("Validation successful!");
       setTimeout(() => {
-        navigate("/session");
-      }, 1500);
-    }, 2000);
+        navigate(`/session?session_id=${sess.session_id}`);
+      }, 800);
+    } catch (e: any) {
+      toast.dismiss();
+      toast.error(e?.message || 'Validation failed');
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   return (
@@ -146,6 +191,29 @@ const Validation = () => {
               </div>
             </TabsContent>
           </Tabs>
+        </Card>
+
+        {pairing && (
+          <Card className="p-4 mt-4">
+            <h3 className="font-semibold mb-1">EV Charging</h3>
+            <p className="text-sm">Charger <span className="font-medium">{pairing.charger_id}</span> assigned. Est. {pairing.est_kwh} kWh in ~{pairing.est_time_min}m (conf {Math.round(pairing.confidence*100)}%).</p>
+          </Card>
+        )}
+
+        {/* Indoor Guidance */}
+        <Card className="p-4 mt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold">Guide to Bay</h3>
+              {!origin && <p className="text-xs text-muted-foreground">Enable location to get indoor guidance</p>}
+            </div>
+            <Button size="sm" onClick={handleGuideToBay} disabled={!origin || gettingIndoor}>{gettingIndoor ? 'Guiding…' : 'Guide'}</Button>
+          </div>
+          {indoorPath && (
+            <ol className="list-decimal pl-5 text-sm space-y-1 mt-3">
+              {indoorPath.steps.map((s,i)=>(<li key={i}>{s.instruction} <span className="text-muted-foreground">({s.distance_m}m{s.level?`, ${s.level}`:''})</span></li>))}
+            </ol>
+          )}
         </Card>
 
         {/* Info Card */}

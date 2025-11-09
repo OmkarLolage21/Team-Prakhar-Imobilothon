@@ -22,6 +22,7 @@ class BookingCreateRequest(BaseModel):
     eta: str  # ISO
     mode: str = Field(pattern="^(guaranteed|smart_hold)$")
     window_minutes: int = Field(default=60, ge=5, le=240)
+    add_on_ids: List[str] = []  # optional list of selected service add-on IDs
 
 class BookingResponse(BaseModel):
     booking_id: str
@@ -251,6 +252,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
             "status": status.value,
             "p_free_at_hold": p,
             "backups": backups,
+            "add_on_ids": req.add_on_ids,
             "created_at": dt.datetime.utcnow().isoformat(),
         }
         db.add(EventsOutbox(

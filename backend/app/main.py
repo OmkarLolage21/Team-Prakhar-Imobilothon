@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.services.model_service import model_service
 from app.routers import ml, auth, offers, bookings, admin, health, sessions, payments
+from app.routers import profile, vehicles, navigation, carbon, services, violations
 from app.routers import inventory as inventory_router
 from app.routers import analytics as analytics_router
 from app.agents.predictor import predictor_loop
@@ -28,6 +29,10 @@ app = FastAPI(title=settings.api_name, version=settings.api_version)
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 extra_origin = getattr(settings, "frontend_origin", None)
 if extra_origin and extra_origin not in allowed_origins:
@@ -66,6 +71,12 @@ app.include_router(inventory_router.router)
 app.include_router(analytics_router.router)
 app.include_router(admin.router)
 app.include_router(health.router)
+app.include_router(profile.router)
+app.include_router(vehicles.router)
+app.include_router(navigation.router)
+app.include_router(carbon.router)
+app.include_router(services.router)
+app.include_router(violations.router)
 
 @app.get("/")
 async def root():

@@ -1,16 +1,57 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { mockOffers } from "@/lib/mockData";
-import { Navigation, Clock, AlertTriangle, CheckCircle2, ArrowRight } from "lucide-react";
+import { useOffers } from "@/hooks/useOffers";
+import { Navigation, AlertTriangle, CheckCircle2, ArrowRight } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { getBooking, formatINR, getIndoorPath, type NavPath } from "@/lib/api";
+import ParkingMap from "@/components/ParkingMap";
 
 const EnRoute = () => {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
   const [showSwapBanner, setShowSwapBanner] = useState(false);
-  const offer = mockOffers[0];
+  const { offers } = useOffers();
+  const bookingId = search.get('booking_id');
+  const [origin, setOrigin] = useState<{lat:number; lng:number} | undefined>(undefined);
+  const [eta, setEta] = useState<string | null>(null);
+  const [selectedOfferId, setSelectedOfferId] = useState<string | undefined>(undefined);
+  const [indoorPath, setIndoorPath] = useState<NavPath | null>(null);
+  const [gettingIndoor, setGettingIndoor] = useState(false);
+  const [pairing, setPairing] = useState<{charger_id:string; est_kwh:number; est_time_min:number; confidence:number}|null>(null);
+  const offer = useMemo(() => offers.find(o => o.id === selectedOfferId) || offers[0], [offers, selectedOfferId]);
+
+  // Watch geolocation (live ETA from current location)
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    const id = navigator.geolocation.watchPosition(
+      pos => setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+    );
+    return () => { try { navigator.geolocation.clearWatch(id); } catch {} };
+  }, []);
+
+  // Load booking and map it to an offer id (slot_id)
+  useEffect(() => {
+    const load = async () => {
+      if (!bookingId) return;
+      try {
+        const b = await getBooking(bookingId);
+        if (b?.slot_id) setSelectedOfferId(b.slot_id);
+        // Load saved EV pairing (if any)
+        try {
+          const raw = localStorage.getItem(`ev_pairing_${bookingId}`);
+          if (raw) setPairing(JSON.parse(raw));
+        } catch {}
+      } catch {
+        // ignore
+      }
+    };
+    void load();
+  }, [bookingId]);
 
   const handleAcceptSwap = () => {
     setShowSwapBanner(false);
@@ -20,42 +61,58 @@ const EnRoute = () => {
     setShowSwapBanner(true);
   };
 
+  const handleGuideToBay = async () => {
+    if (!origin || !selectedOfferId) return;
+    try {
+      setGettingIndoor(true);
+      const path = await getIndoorPath(origin.lat, origin.lng, selectedOfferId);
+      setIndoorPath(path);
+    } catch {
+      setIndoorPath(null);
+    } finally {
+      setGettingIndoor(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background pb-24">
-      {/* Map Placeholder */}
-      <div className="h-96 bg-gradient-to-br from-primary/20 to-accent/20 relative">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center">
-            <Navigation className="w-16 h-16 text-primary mx-auto mb-4" />
-            <p className="text-xl font-semibold">Navigation Active</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Follow the route to your parking
-            </p>
+      {/* Live Map with route */}
+      <div className="relative">
+        <ParkingMap
+          offers={offer ? [offer] : offers}
+          origin={origin}
+          selectedOfferId={offer?.id}
+          onOfferClick={() => {}}
+          onEtaChange={setEta}
+          indoorPath={indoorPath ? { nodes: indoorPath.nodes.map(n=>({ lat:n.lat, lng:n.lng, level:n.level })) } : null}
+        />
+        <div className="absolute top-3 right-3">
+          <div className="flex gap-2">
+            <Button
+              onClick={handleGuideToBay}
+              variant="default"
+              size="sm"
+              className="bg-primary text-white"
+              disabled={!origin || !selectedOfferId || gettingIndoor}
+            >
+              {gettingIndoor ? 'Guiding…' : 'Guide to Bay'}
+            </Button>
+            <Button
+              onClick={simulateSwap}
+              variant="outline"
+              size="sm"
+              className="bg-card"
+            >
+              Simulate Confidence Drop
+            </Button>
           </div>
         </div>
-
-        {/* ETA Chip */}
-        <div className="absolute top-6 left-1/2 -translate-x-1/2">
-          <Card className="px-4 py-2 shadow-elevated">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-primary" />
-              <span className="font-semibold">ETA: 8 minutes</span>
-            </div>
-          </Card>
-        </div>
-
-        {/* Demo Button */}
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2">
-          <Button
-            onClick={simulateSwap}
-            variant="outline"
-            size="sm"
-            className="bg-card"
-          >
-            Simulate Confidence Drop
-          </Button>
-        </div>
       </div>
+      {!origin && (
+        <div className="px-4 py-2">
+          <Card className="p-3 text-sm">Enable location to show live ETA from your position.</Card>
+        </div>
+      )}
 
       {/* Swap Banner */}
       {showSwapBanner && (
@@ -94,11 +151,23 @@ const EnRoute = () => {
 
       {/* Booking Details */}
       <div className="px-4 py-6 space-y-4">
+        {indoorPath && (
+          <Card className="p-4">
+            <h3 className="font-semibold mb-2">Last 200m Guidance</h3>
+            <ol className="list-decimal pl-5 text-sm space-y-1">
+              {indoorPath.steps.map((s, i) => (
+                <li key={i}>
+                  {s.instruction} <span className="text-muted-foreground">({s.distance_m}m{s.level ? `, ${s.level}` : ''})</span>
+                </li>
+              ))}
+            </ol>
+          </Card>
+        )}
         <Card className="p-6">
-          <div className="flex items-start justify-between mb-4">
+            <div className="flex items-start justify-between mb-4">
             <div>
-              <h2 className="text-xl font-bold">{offer.name}</h2>
-              <p className="text-sm text-muted-foreground">{offer.address}</p>
+              <h2 className="text-xl font-bold">{offer?.name ?? 'Your Parking'}</h2>
+              <p className="text-sm text-muted-foreground">{offer?.address ?? 'Address shared in confirmation'}</p>
             </div>
             <Badge className="bg-gradient-primary">Smart Hold</Badge>
           </div>
@@ -106,20 +175,27 @@ const EnRoute = () => {
           <div className="space-y-3">
             <div className="flex justify-between items-center p-3 bg-muted rounded-lg">
               <span className="text-sm font-medium">Your Booking</span>
-              <span className="text-sm text-muted-foreground">#BK12345</span>
+              <span className="text-sm text-muted-foreground">{bookingId ? `#${bookingId.slice(0,6)}…` : '#BK—'}</span>
             </div>
 
             <div className="flex justify-between items-center p-3 bg-muted rounded-lg">
               <span className="text-sm font-medium">Expected Arrival</span>
-              <span className="text-sm font-semibold">2:08 PM</span>
+              <span className="text-sm font-semibold">{eta ?? 'Calculating...'}</span>
             </div>
 
             <div className="flex justify-between items-center p-3 bg-muted rounded-lg">
               <span className="text-sm font-medium">Rate</span>
-              <span className="text-sm font-semibold">₹150/hour</span>
+              <span className="text-sm font-semibold">{formatINR(offer?.price ?? 150)}/hour</span>
             </div>
           </div>
         </Card>
+
+        {pairing && (
+          <Card className="p-4">
+            <h3 className="font-semibold mb-1">EV Charging</h3>
+            <p className="text-sm">Assigned charger <span className="font-medium">{pairing.charger_id}</span>. Est. {pairing.est_kwh} kWh in ~{pairing.est_time_min}m (confidence {Math.round(pairing.confidence*100)}%).</p>
+          </Card>
+        )}
 
         <Card className="p-4 bg-primary/5 border-primary/20">
           <p className="text-sm">
@@ -132,7 +208,7 @@ const EnRoute = () => {
       {/* Bottom Actions */}
       <div className="fixed bottom-0 left-0 right-0 bg-card border-t p-4 space-y-3">
         <Button
-          onClick={() => navigate("/validation")}
+          onClick={() => navigate(`/validation?booking_id=${bookingId ?? ''}`)}
           className="w-full h-14 text-base font-semibold"
         >
           I've Arrived

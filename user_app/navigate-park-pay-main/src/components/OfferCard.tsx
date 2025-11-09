@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { ParkingOffer } from "@/types/parking";
 import { MapPin, Zap, Accessibility, Shield, TrendingUp } from "lucide-react";
+import { formatINR } from "@/lib/api";
 
 interface OfferCardProps {
   offer: ParkingOffer;
@@ -27,7 +28,7 @@ export const OfferCard = ({ offer, onClick }: OfferCardProps) => {
           </div>
           <div className="text-right">
             <div className="text-2xl font-bold text-primary">
-              {offer.currency}{offer.price}
+              {formatINR(offer.price)}
             </div>
             <div className="text-xs text-muted-foreground">per hour</div>
           </div>
@@ -77,7 +78,7 @@ export const OfferCard = ({ offer, onClick }: OfferCardProps) => {
               <span className="text-warning font-medium">
                 Arrive {offer.nudge.timeAdjustment > 0 ? "+" : ""}
                 {offer.nudge.timeAdjustment}m → +{offer.nudge.successIncrease}% success,
-                −{offer.currency}{offer.nudge.priceReduction}
+                −{formatINR(offer.nudge.priceReduction)}
               </span>
             </div>
           </div>

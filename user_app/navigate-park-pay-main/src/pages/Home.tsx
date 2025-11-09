@@ -11,9 +11,11 @@ import {
   SlidersHorizontal,
   Zap,
   Accessibility,
+  List,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { useLots } from "@/hooks/useLots";
 
 const Home = () => {
   const navigate = useNavigate();
@@ -24,11 +26,13 @@ const Home = () => {
     accessible: false,
     maxPrice: "",
   });
+  const { lots, loading: lotsLoading } = useLots();
+  const [selectedLot, setSelectedLot] = useState<string>("");
 
   const handleSearch = () => {
-    if (destination) {
-      navigate("/offers");
-    }
+    const params = new URLSearchParams();
+    if (selectedLot) params.set("lot_id", selectedLot);
+    navigate(`/offers${params.toString() ? `?${params.toString()}` : ""}`);
   };
 
   return (
@@ -52,6 +56,22 @@ const Home = () => {
                 onChange={(e) => setDestination(e.target.value)}
                 className="pl-10 h-12 text-base"
               />
+            </div>
+
+            {/* Lot Dropdown */}
+            <div className="relative">
+              <List className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+              <select
+                aria-label="Select parking lot"
+                value={selectedLot}
+                onChange={(e) => setSelectedLot(e.target.value)}
+                className="pl-10 h-12 w-full rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value="">{lotsLoading ? "Loading lots..." : "Select a lot (optional)"}</option>
+                {lots.map(l => (
+                  <option key={l.id} value={l.id}>{l.name} ({l.occupancy}/{l.capacity})</option>
+                ))}
+              </select>
             </div>
 
             {/* Arrival Time */}
@@ -134,11 +154,11 @@ const Home = () => {
             {/* Search Button */}
             <Button
               onClick={handleSearch}
-              disabled={!destination}
+              disabled={lotsLoading || (!selectedLot && !destination)}
               className="w-full h-12 text-base font-semibold"
             >
               <Search className="w-5 h-5 mr-2" />
-              Search Parking
+              {lotsLoading ? "Loading..." : "Search Parking"}
             </Button>
           </div>
         </Card>

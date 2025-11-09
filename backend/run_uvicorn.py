@@ -11,5 +11,7 @@ if sys.platform.startswith("win"):
 import uvicorn
 
 if __name__ == "__main__":
-    # Default host/port; adjust if needed
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+    # Dev server: bind on all interfaces and enable reload so new routers (/profile, /vehicles) appear after edits
+    host = "0.0.0.0"  # use 127.0.0.1 if you prefer localhost only
+    port = 8000
+    uvicorn.run("app.main:app", host=host, port=port, reload=True, log_level="info")

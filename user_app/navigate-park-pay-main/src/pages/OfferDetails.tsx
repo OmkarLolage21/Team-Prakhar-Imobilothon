@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
-import { mockOffers } from "@/lib/mockData";
+import { useOffers } from "@/hooks/useOffers";
 import {
   ArrowLeft,
   MapPin,
@@ -14,14 +14,16 @@ import {
   Shield,
   Building,
 } from "lucide-react";
+import { formatINR } from "@/lib/api";
 
 const OfferDetails = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  const offer = mockOffers.find((o) => o.id === id);
+  const { offers } = useOffers();
+  const offer = offers.find((o) => o.id === id);
 
   if (!offer) {
-    return <div>Offer not found</div>;
+  return <div className="p-6">Offer not found</div>;
   }
 
   return (
@@ -57,7 +59,7 @@ const OfferDetails = () => {
               </div>
               <div className="text-right">
                 <div className="text-3xl font-bold text-primary">
-                  {offer.currency}{offer.price}
+                  {formatINR(offer.price)}
                 </div>
                 <div className="text-sm text-muted-foreground">per hour</div>
               </div>
@@ -162,7 +164,7 @@ const OfferDetails = () => {
 
       {/* Bottom Actions */}
       <div className="fixed bottom-0 left-0 right-0 bg-card border-t p-4 space-y-3">
-        {offer.sla.guaranteedSpot && (
+            {offer.sla.guaranteedSpot && (
           <Button
             onClick={() => navigate(`/booking/${offer.id}/guaranteed`)}
             className="w-full h-14 text-base font-semibold bg-success hover:bg-success/90"
