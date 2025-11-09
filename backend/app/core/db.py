@@ -1,4 +1,6 @@
 from __future__ import annotations
+import sys
+import asyncio
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,18 +9,24 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 import ssl
 import socket
 
+# Ensure correct event loop policy EARLY before psycopg engine creation
+if sys.platform.startswith("win"):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 _settings = get_settings()
 
 # Expect DATABASE_URL in form: postgresql://user:pass@host:port/db
-# For async usage with SQLAlchemy, convert to asyncpg URL if needed
-# postgres:// -> postgresql+asyncpg://
+# Use psycopg3 async driver to avoid PgBouncer prepared statement issues
 def _to_async_url(url: str) -> str:
-    if url.startswith("postgresql+asyncpg://"):
+    if url.startswith("postgresql+psycopg://"):
         return url
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
     if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
 def _need_ssl(url: str) -> bool:
@@ -36,19 +44,15 @@ def _need_ssl(url: str) -> bool:
         pass
     return False
 
-def _sanitize_url(url: str) -> str:
-    """Remove query params that asyncpg does not accept directly (e.g. sslmode) since
-    asyncpg.connect() will raise 'unexpected keyword argument sslmode'. We map sslmode to ssl usage.
-    """
+def _ensure_sslmode(url: str) -> str:
+    """Ensure sslmode=require is present in URL when SSL is needed (psycopg/libpq style)."""
     try:
         parsed = urlparse(url)
         q = parse_qs(parsed.query)
-        # Drop sslmode / ssl params (we drive SSL via connect_args)
-        q.pop("sslmode", None)
-        q.pop("ssl", None)
+        if "sslmode" not in q:
+            q["sslmode"] = ["require"]
         new_query = urlencode([(k, v0) for k, vals in q.items() for v0 in vals]) if q else ""
-        sanitized = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
-        return sanitized
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
     except Exception:
         return url
 
@@ -80,26 +84,11 @@ engine = None
 SessionLocal: sessionmaker[AsyncSession] | None = None
 
 def _add_ps_cache_disable(url: str) -> str:
-    """Append parameters to disable prepared statements under PgBouncer.
-    For asyncpg, the critical flag is statement_cache_size=0. We also include
-    prepared_statement_cache_size=0 for SQLAlchemy dialects that read it.
-    """
-    try:
-        parsed = urlparse(url)
-        q = parse_qs(parsed.query)
-        # Ensure both keys are present in URL so either layer can pick them up
-        if "statement_cache_size" not in q:
-            q["statement_cache_size"] = ["0"]
-        if "prepared_statement_cache_size" not in q:
-            q["prepared_statement_cache_size"] = ["0"]
-        new_query = urlencode([(k, v0) for k, vals in q.items() for v0 in vals]) if q else ""
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
-    except Exception:
-        return url
+    # Not needed for psycopg; keep as no-op
+    return url
 
 if _DATABASE_URL:
-    raw_url = _sanitize_url(_DATABASE_URL)
-    raw_url = _add_ps_cache_disable(raw_url)
+    raw_url = _DATABASE_URL
     # Optional: resolve hostname to IPv4 address to bypass local DNS issues
     try:
         parsed_for_host = urlparse(raw_url)
@@ -116,6 +105,9 @@ if _DATABASE_URL:
                 raw_url = _replace_host(raw_url, ip)
     except Exception as _ex:
         print("[db] hostname resolution skipped/failed:", _ex)
+    # Ensure SSL when required for Supabase (psycopg uses libpq sslmode)
+    if _need_ssl(_DATABASE_URL):
+        raw_url = _ensure_sslmode(raw_url)
     async_url = _to_async_url(raw_url)
     # Log which host we're connecting to and detect PgBouncer-like hosts
     try:
@@ -126,26 +118,9 @@ if _DATABASE_URL:
             print("[db] Detected pooling/PgBouncer host. If you see DuplicatePreparedStatementError, set DATABASE_URL_DIRECT to bypass.")
     except Exception:
         pass
-    connect_args: dict = {}
-    if _need_ssl(_DATABASE_URL):
-        ctx = ssl.create_default_context()
-        if getattr(_settings, "db_disable_ssl_verify", False):
-            try:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                print("[db] SSL verification disabled (development)")
-            except Exception:
-                pass
-        connect_args["ssl"] = ctx
-    # Disable asyncpg statement cache explicitly to support PgBouncer transaction/statement modes
-    connect_args["statement_cache_size"] = 0  # asyncpg driver cache
-    # Also set dialect-preferred prepared statement cache to 0 via URL; connect_args may ignore this
-    connect_args.setdefault("prepared_statement_cache_size", 0)
-    # Log connect_args of interest
-    try:
-        print(f"[db] connect_args: statement_cache_size={connect_args.get('statement_cache_size')} prepared_statement_cache_size={connect_args.get('prepared_statement_cache_size')}")
-    except Exception:
-        pass
+    # Disable automatic server-side prepared statements (PgBouncer transaction pooling compatibility)
+    connect_args: dict = {"prepare_threshold": None}
+    print(f"[db] connect_args: (psycopg) {connect_args}")
     # Debug print of final URL parameters (safe: no password output) for verification
     try:
         parsed_dbg = urlparse(async_url)

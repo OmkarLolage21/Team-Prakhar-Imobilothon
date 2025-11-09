@@ -40,6 +40,30 @@ class SessionResponse(BaseModel):
     grace_ends_at: Optional[str]
 
 
+@router.get("/live", response_model=list[SessionResponse])
+async def live(limit: int = 100, db: AsyncSession = Depends(get_db)):
+    """Return active (not ended) sessions for provider UI."""
+    res = await db.execute(
+        select(SessionModel)
+        .where(SessionModel.ended_at.is_(None))
+        .order_by(SessionModel.started_at.desc())
+        .limit(limit)
+    )
+    rows = res.scalars().all()
+    return [
+        SessionResponse(
+            session_id=s.session_id,
+            booking_id=s.booking_id,
+            started_at=s.started_at.isoformat() if s.started_at else None,
+            ended_at=s.ended_at.isoformat() if s.ended_at else None,
+            validation_method=s.validation_method.value if s.validation_method else None,
+            bay_label=s.bay_label,
+            grace_ends_at=s.grace_ends_at.isoformat() if s.grace_ends_at else None,
+        )
+        for s in rows
+    ]
+
+
 @router.post("/start", response_model=SessionResponse)
 async def start(req: StartRequest, db: AsyncSession = Depends(get_db)):
     # Validate booking exists

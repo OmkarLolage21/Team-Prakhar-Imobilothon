@@ -12,14 +12,51 @@
 
 ```powershell
 # (Optional) create & activate virtual environment if not already in myenv
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+python -m venv myenv
+./myenv/Scripts/Activate.ps1
 
 pip install -r backend/requirements.txt
 
-# Run FastAPI (auto reload for dev)
-uvicorn app.main:app --reload --port 8000
+# IMPORTANT (Windows + psycopg async):
+# psycopg cannot use the default Proactor event loop; you MUST set
+# WindowsSelectorEventLoopPolicy BEFORE uvicorn starts, otherwise
+# background agents will raise InterfaceError.
+
+# Recommended start (wrapper script sets policy early):
+python run_uvicorn.py
+
+# OR manual start with inline policy:
+python - <<'PY'
+import asyncio, sys
+if sys.platform.startswith('win'):
+  try:
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+  except Exception:
+    pass
+import uvicorn
+uvicorn.run('app.main:app', host='127.0.0.1', port=8000, reload=False)
+PY
+
+# Avoid using plain: uvicorn app.main:app  (will create Proactor loop first)
 ```
+
+### Why the wrapper is needed
+
+`uvicorn` creates the event loop before importing your application. Setting
+`WindowsSelectorEventLoopPolicy` inside `app.main` is therefore too late—the loop
+already exists. By calling the policy in `run_uvicorn.py` (or inline before
+`uvicorn.run`), we ensure psycopg async connections and background tasks run
+without `psycopg.InterfaceError`.
+
+### Symptoms if started incorrectly
+
+You will see repeated lines like:
+
+```
+(psycopg.InterfaceError) Psycopg cannot use the 'ProactorEventLoop' to run in async mode.
+```
+
+If that happens, stop the server (Ctrl+C) and restart with the wrapper.
 
 ## Key Endpoints (Current)
 

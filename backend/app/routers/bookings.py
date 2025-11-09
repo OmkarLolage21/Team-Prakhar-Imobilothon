@@ -10,7 +10,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
-from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction, EventsOutbox
+from app.models import Booking, BookingCandidate, BookingStatus, BookingMode, Slot, SlotPrediction, EventsOutbox, Payment, PaymentStatus, Location
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -34,6 +34,73 @@ class BookingResponse(BaseModel):
 
 class SwapRequest(BaseModel):
     new_slot_id: str
+
+
+class BookingLedgerItem(BaseModel):
+    id: str
+    customer: Optional[str] = None
+    email: Optional[str] = None
+    lot: Optional[str] = None
+    startDate: Optional[str] = None
+    endDate: Optional[str] = None
+    duration: Optional[str] = None
+    amount: Optional[str] = None
+    paymentMethod: Optional[str] = None
+    status: Optional[str] = None
+    paymentStatus: Optional[str] = None
+
+
+@router.get("/recent", response_model=List[BookingLedgerItem])
+async def recent(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """Return recent bookings with basic payment info for provider UI."""
+    try:
+        res = await db.execute(
+            select(Booking).order_by(Booking.created_at.desc()).limit(limit)
+        )
+        rows = res.scalars().all()
+        items: List[BookingLedgerItem] = []
+        for b in rows:
+            lot_name = None
+            if b.slot_id:
+                s_res = await db.execute(select(Slot).where(Slot.slot_id == b.slot_id))
+                s = s_res.scalar_one_or_none()
+                if s and s.location_id:
+                    l_res = await db.execute(select(Location).where(Location.location_id == s.location_id))
+                    loc = l_res.scalar_one_or_none()
+                    if loc:
+                        lot_name = loc.name
+            pay_res = await db.execute(select(Payment).where(Payment.booking_id == b.booking_id))
+            p = pay_res.scalar_one_or_none()
+            amount = None
+            p_status = None
+            if p:
+                if p.amount_captured is not None:
+                    amount = float(p.amount_captured)
+                elif p.amount_authorized is not None:
+                    amount = float(p.amount_authorized)
+                p_status = p.status.value
+            # very simple duration placeholder
+            duration = None
+            items.append(BookingLedgerItem(
+                id=b.booking_id,
+                customer=None,
+                email=None,
+                lot=lot_name or (b.cluster_id or None),
+                startDate=b.eta_minute.isoformat() if b.eta_minute else None,
+                endDate=None,
+                duration=duration,
+                amount=(f"${amount:.2f}" if amount is not None else None),
+                paymentMethod="Card" if p else None,
+                status=b.status.value if b.status else None,
+                paymentStatus=(
+                    "paid" if p_status == PaymentStatus.captured.value else (
+                        "pending" if p_status == PaymentStatus.preauth_ok.value else ("failed" if p_status == PaymentStatus.cancelled.value else None)
+                    )
+                ),
+            ))
+        return items
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/", response_model=BookingResponse)
 async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
