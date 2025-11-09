@@ -23,12 +23,58 @@ class ProfileUpdateRequest(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
 
-@router.get("/", response_model=ProfileResponse)
+@router.get("/", response_model=ProfileResponse,
+    summary="Get user profile",
+    response_description="Current user profile data",
+)
 async def get_profile():
+    """
+    Retrieve the authenticated user's profile.
+    
+    ## MVP Note
+    
+    Currently returns demo profile. Production implementation would:
+    - Extract user_id from JWT token
+    - Query user database
+    - Include preferences, settings, and stats
+    
+    ## Profile Fields
+    
+    - **user_id**: Unique user identifier
+    - **name**: Display name
+    - **email**: Contact email (used for receipts)
+    - **phone**: Optional phone number for SMS alerts
+    """
     return ProfileResponse(**_profile_store)
 
-@router.put("/", response_model=ProfileResponse)
+@router.put("/", response_model=ProfileResponse,
+    summary="Update user profile",
+    response_description="Updated profile data",
+)
 async def update_profile(req: ProfileUpdateRequest):
+    """
+    Update user profile fields.
+    
+    Supports partial updates - only provided fields are modified.
+    
+    ## Updatable Fields
+    
+    - **name**: Change display name
+    - **email**: Update contact email (triggers verification in production)
+    - **phone**: Update phone for notifications
+    
+    ## Validation
+    
+    - Email must be valid format
+    - Phone number format not enforced in MVP
+    
+    ## Future Enhancements
+    
+    - Email verification workflow
+    - Password change
+    - Notification preferences
+    - Privacy settings
+    """
     if req.name:
         _profile_store["name"] = req.name
     if req.email:

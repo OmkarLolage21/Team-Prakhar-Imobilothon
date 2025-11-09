@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from pydantic import BaseModel, Field
 from app.services.inmemory_store import (
     create_booking, BOOKINGS, BOOKING_CANDIDATES, add_backup_slots, swap_booking_slot,
@@ -18,11 +18,11 @@ router = APIRouter(prefix="/bookings", tags=["bookings"])
 CONFIG = AgentsConfig()
 
 class BookingCreateRequest(BaseModel):
-    slot_id: str
-    eta: str  # ISO
-    mode: str = Field(pattern="^(guaranteed|smart_hold)$")
-    window_minutes: int = Field(default=60, ge=5, le=240)
-    add_on_ids: List[str] = []  # optional list of selected service add-on IDs
+    slot_id: str = Field(..., description="Target parking slot identifier", example="LOT1_S042")
+    eta: str = Field(..., description="Expected arrival time (ISO 8601)", example="2025-11-09T14:30:00Z")
+    mode: str = Field(..., pattern="^(guaranteed|smart_hold)$", description="Booking mode: guaranteed (confirmed) or smart_hold (with backups)", example="guaranteed")
+    window_minutes: int = Field(default=60, ge=5, le=240, description="Prediction time window", example=60)
+    add_on_ids: List[str] = Field(default=[], description="Optional service add-on IDs (wash, valet, charging)", example=["a1", "a3"])
 
 class BookingResponse(BaseModel):
     booking_id: str
@@ -51,9 +51,25 @@ class BookingLedgerItem(BaseModel):
     paymentStatus: Optional[str] = None
 
 
-@router.get("/recent", response_model=List[BookingLedgerItem])
-async def recent(limit: int = 50, db: AsyncSession = Depends(get_db)):
-    """Return recent bookings with joined user, location, payment and session info (optimized single query)."""
+@router.get("/recent", response_model=List[BookingLedgerItem],
+    summary="Get recent bookings ledger",
+    response_description="Recent bookings with user, location, payment, and session details",
+)
+async def recent(
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of bookings to return"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve recent bookings with comprehensive join data.
+    
+    Returns enriched booking records including:
+    - Customer email and derived display name
+    - Parking lot name and location
+    - Payment amounts and status
+    - Session duration and timestamps
+    
+    Optimized with a single SQL query to avoid N+1 problems.
+    """
     try:
         # Build a LEFT JOIN query to avoid N+1 lookups
         q = (
@@ -137,7 +153,11 @@ async def recent(limit: int = 50, db: AsyncSession = Depends(get_db)):
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/", response_model=BookingResponse)
+@router.post("/", response_model=BookingResponse,
+    summary="Create a new parking booking",
+    response_description="Created booking with confirmation details",
+    status_code=201,
+)
 async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
     # Validate slot exists (DB first, fallback memory)
     cluster_id: Optional[str] = None
@@ -300,8 +320,19 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
             backups=BOOKING_CANDIDATES.get(booking["booking_id"], []),
         )
 
-@router.get("/{booking_id}", response_model=BookingResponse)
-async def get_booking(booking_id: str, db: AsyncSession = Depends(get_db)):
+@router.get("/{booking_id}", response_model=BookingResponse,
+    summary="Get booking by ID",
+    response_description="Booking details with backup slots",
+)
+async def get_booking(
+    booking_id: str = Path(..., description="Booking identifier", example="b123e4567-e89b-12d3-a456-426614174000"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve a single booking by its unique identifier.
+    
+    Returns the primary slot assignment plus any backup slots configured for smart_hold bookings.
+    """
     # Try DB first
     try:
         res = await db.execute(select(Booking).where(Booking.booking_id == booking_id))
@@ -339,8 +370,25 @@ async def get_booking(booking_id: str, db: AsyncSession = Depends(get_db)):
         backups=BOOKING_CANDIDATES.get(booking_id, []),
     )
 
-@router.post("/{booking_id}/swap", response_model=BookingResponse)
-async def swap(booking_id: str, req: SwapRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/{booking_id}/swap", response_model=BookingResponse,
+    summary="Swap booking to a different slot",
+    response_description="Updated booking with new slot assignment",
+)
+async def swap(
+    booking_id: str = Path(..., description="Booking identifier"),
+    req: SwapRequest = ...,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Swap an existing booking to a different parking slot.
+    
+    Typically used when:
+    - A backup slot needs to be activated
+    - User requests a different location
+    - Original slot becomes unavailable
+    
+    Emits a `booking.swapped` event to the outbox for downstream processing.
+    """
     # Try DB path
     try:
         # validate slot

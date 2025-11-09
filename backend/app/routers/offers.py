@@ -19,19 +19,57 @@ class Offer(BaseModel):
     ev: bool = False
     accessible: bool = False
 
-@router.get("/search", response_model=List[Offer])
+@router.get("/search", response_model=List[Offer], 
+    summary="Search available parking offers",
+    response_description="List of parking offers sorted by availability confidence",
+)
 async def search_offers(
-    lat: float = Query(...),
-    lng: float = Query(...),
-    eta: str = Query(...),
-    window_minutes: int = Query(60, ge=5, le=240),
+    lat: float = Query(..., description="User's current latitude", example=18.5204),
+    lng: float = Query(..., description="User's current longitude", example=73.8567),
+    eta: str = Query(..., description="Expected arrival time (ISO 8601)", example="2025-11-09T14:30:00Z"),
+    window_minutes: int = Query(60, ge=5, le=240, description="Time window for predictions (minutes)", example=60),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return offers using bounded nearest prediction (±60m) and dual before/after queries.
-    Hardened logic:
-      1. Bounds time window to avoid very old/far predictions.
-      2. Gets at most one prediction before and one after requested eta, chooses closest.
-      3. Skips slot if no prediction within window.
+    """
+    Search for available parking slots based on location and arrival time.
+    
+    ## Algorithm
+    
+    1. **Time Window Bounding** - Restricts search to predictions within ±window_minutes of ETA
+    2. **Dual Query Strategy** - Fetches one prediction before and one after ETA, selects closest
+    3. **Confidence Filtering** - Skips slots with no predictions in the time window
+    4. **Ranking** - Sorts by confidence (desc), price (asc), distance (asc)
+    
+    ## Response Fields
+    
+    - `p_free`: ML-predicted probability of slot being available (0.0-1.0)
+    - `mode_options`: Available booking modes (guaranteed or smart_hold)
+    - `ev`: Whether slot supports electric vehicle charging
+    - `accessible`: Whether slot meets accessibility requirements
+    
+    ## Example Response
+    
+    ```json
+    [
+        {
+            "slot_id": "LOT1_S042",
+            "cluster_id": "cluster_downtown_west",
+            "distance_m": 320,
+            "eta_minute": "2025-11-09T14:30:00Z",
+            "p_free": 0.87,
+            "price": 25.0,
+            "mode_options": ["guaranteed", "smart_hold"],
+            "ev": true,
+            "accessible": false
+        }
+    ]
+    ```
+    
+    ## Notes
+    
+    - Slots with `p_free < 0.7` may offer backup slots in smart_hold mode
+    - Distance is calculated as straight-line from user position
+    - Prices are in local currency (INR by default)
     """
     from datetime import datetime, timedelta
     eta_dt = datetime.fromisoformat(eta.replace("Z", "+00:00"))

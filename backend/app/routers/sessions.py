@@ -2,7 +2,7 @@ from typing import Optional
 import uuid
 import datetime as dt
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,13 +57,37 @@ class SessionResponse(BaseModel):
     customer_phone: Optional[str] = None
 
 
-@router.get("/live", response_model=list[SessionResponse])
-async def live(limit: int = 100, recent_hours: int = 0, db: AsyncSession = Depends(get_db)):
-    """Return active (and optionally recently ended) sessions enriched with booking, payment and location info.
-
-    Args:
-        limit: max rows
-        recent_hours: if >0 include sessions ended within this many hours along with active sessions.
+@router.get("/live", response_model=list[SessionResponse],
+    summary="Get live parking sessions",
+    response_description="Active sessions with enriched data",
+)
+async def live(
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of sessions to return"),
+    recent_hours: int = Query(0, ge=0, le=72, description="Include sessions ended within this many hours (0 = active only)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve active parking sessions with comprehensive enrichment.
+    
+    Returns real-time session data including:
+    - Booking and customer information
+    - Parking lot location and slot details
+    - Payment authorization and capture status
+    - Duration calculations and cost estimates
+    - Grace period countdown
+    
+    ## Use Cases
+    
+    - **Dashboard monitoring**: Set `recent_hours=0` for active-only sessions
+    - **Recent history**: Set `recent_hours=24` to include completed sessions from last day
+    - **Analytics**: Use higher limits with recent_hours for trend analysis
+    
+    ## Cost Estimation
+    
+    Cost is calculated in priority order:
+    1. Captured amount (if payment finalized)
+    2. Authorized amount (if pre-auth exists)
+    3. Duration × dynamic_price (real-time estimate)
     """
     now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
     cutoff = now - dt.timedelta(hours=recent_hours) if recent_hours > 0 else None
@@ -143,8 +167,30 @@ async def live(limit: int = 100, recent_hours: int = 0, db: AsyncSession = Depen
     return payload
 
 
-@router.post("/start", response_model=SessionResponse)
+@router.post("/start", response_model=SessionResponse,
+    summary="Start a parking session",
+    response_description="Created session with validation details",
+    status_code=201,
+)
 async def start(req: StartRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Initialize a parking session from a confirmed booking.
+    
+    Transitions booking status to `active` and creates a session record with:
+    - Optional validation method (QR, NFC, or plate recognition)
+    - Bay label assignment
+    - Grace period for checkout (default 15 minutes)
+    
+    ## Validation Methods
+    
+    - **qr**: QR code scan at entry
+    - **nfc**: NFC tap validation
+    - **plate**: Automatic license plate recognition
+    
+    ## Grace Period
+    
+    Allows drivers to complete checkout without overstay penalties within the grace window.
+    """
     # Validate booking exists
     res = await db.execute(select(Booking).where(Booking.booking_id == req.booking_id))
     b = res.scalar_one_or_none()
@@ -187,8 +233,26 @@ class ValidateRequest(BaseModel):
     bay_label: Optional[str] = None
 
 
-@router.post("/{session_id}/validate", response_model=SessionResponse)
-async def validate(session_id: str, req: ValidateRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/{session_id}/validate", response_model=SessionResponse,
+    summary="Validate parking session",
+    response_description="Updated session with validation confirmation",
+)
+async def validate(
+    session_id: str = Path(..., description="Session identifier"),
+    req: ValidateRequest = ...,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update session validation method and bay assignment.
+    
+    Creates payment pre-authorization if not already present, using slot's dynamic price.
+    Emits `session.validated` and `payment.preauth_ok` events.
+    
+    Typically called when:
+    - Driver scans QR code at parking bay
+    - NFC validation at bay entrance
+    - ANPR confirms vehicle at assigned location
+    """
     # Update validation on the session
     res = await db.execute(select(SessionModel).where(SessionModel.session_id == session_id))
     sess = res.scalar_one_or_none()
@@ -268,8 +332,28 @@ class ExtendRequest(BaseModel):
     grace_until: Optional[str] = None  # ISO
 
 
-@router.post("/{session_id}/extend", response_model=SessionResponse)
-async def extend(session_id: str, req: ExtendRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/{session_id}/extend", response_model=SessionResponse,
+    summary="Extend session grace period",
+    response_description="Updated session with extended grace time",
+)
+async def extend(
+    session_id: str = Path(..., description="Session identifier"),
+    req: ExtendRequest = ...,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Extend the grace period for a parking session.
+    
+    Allows drivers to add more time before overstay penalties apply.
+    Can extend by specifying either:
+    - `minutes`: Number of minutes to add to current grace_ends_at
+    - `grace_until`: Specific ISO timestamp for new grace deadline
+    
+    Useful for:
+    - Meetings running over schedule
+    - Avoiding rush hour congestion
+    - Flexible departure planning
+    """
     res = await db.execute(select(SessionModel).where(SessionModel.session_id == session_id))
     sess = res.scalar_one_or_none()
     if sess is None:
@@ -301,8 +385,25 @@ async def extend(session_id: str, req: ExtendRequest, db: AsyncSession = Depends
     )
 
 
-@router.post("/{session_id}/end", response_model=SessionResponse)
-async def end(session_id: str, db: AsyncSession = Depends(get_db)):
+@router.post("/{session_id}/end", response_model=SessionResponse,
+    summary="End parking session",
+    response_description="Completed session with final payment capture",
+)
+async def end(
+    session_id: str = Path(..., description="Session identifier"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Finalize a parking session and capture payment.
+    
+    Actions performed:
+    1. Sets session `ended_at` timestamp
+    2. Transitions booking to `completed` status
+    3. Captures final payment amount based on slot's dynamic price
+    4. Emits `payment.captured` event
+    
+    Called when driver exits the parking facility.
+    """
     res = await db.execute(select(SessionModel).where(SessionModel.session_id == session_id))
     sess = res.scalar_one_or_none()
     if sess is None:

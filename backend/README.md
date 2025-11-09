@@ -8,6 +8,17 @@
 - Background agents: predictor (horizon insertion), pricing, incentives, outbox publisher
 - Outbox pattern simulating Kafka events (`events_outbox` table)
 
+## Documentation
+
+📘 **[Complete API Documentation (Swagger/OpenAPI)](./SWAGGER_GUIDE.md)**
+
+Interactive API documentation is available at:
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+See [SWAGGER_GUIDE.md](./SWAGGER_GUIDE.md) for detailed usage instructions.
+
 ## Quick Start (Windows PowerShell)
 
 ```powershell

@@ -23,7 +23,100 @@ from app.agents.incentives_agent import incentives_loop
 
 settings = get_settings()
 
-app = FastAPI(title=settings.api_name, version=settings.api_version)
+app = FastAPI(
+    title=settings.api_name,
+    version=settings.api_version,
+    description="""
+# Team Prakhar IMobilothon Smart Parking Platform
+
+A comprehensive parking management system with AI-powered availability prediction, dynamic pricing, 
+and real-time session management.
+
+## Key Features
+
+* 🎯 **Smart Booking** - ML-powered availability predictions with confidence scoring
+* ⚡ **Dynamic Pricing** - Real-time price optimization based on demand
+* 🚗 **Session Management** - Complete parking lifecycle from booking to payment
+* 🔋 **EV Support** - Electric vehicle charging pairing and scheduling
+* 📍 **Indoor Navigation** - Last-200m guidance to parking bay
+* 📊 **Analytics** - Revenue, occupancy, and carbon footprint tracking
+* 🚨 **Violation Detection** - Automated overstay and misuse monitoring
+
+## Authentication
+
+Currently uses demo mode.
+
+## Rate Limiting
+
+Not implemented in MVP.
+    """,
+    openapi_tags=[
+        {
+            "name": "offers",
+            "description": "Search and discover available parking slots with ML-powered confidence scores",
+        },
+        {
+            "name": "bookings",
+            "description": "Create, retrieve, and swap parking reservations with backup slot management",
+        },
+        {
+            "name": "sessions",
+            "description": "Manage active parking sessions from validation to completion",
+        },
+        {
+            "name": "simulate payments",
+            "description": "Handle pre-authorization, capture, and refunds for parking charges",
+        },
+        {
+            "name": "inventory",
+            "description": "Manage parking lots, slots, and real-time occupancy data",
+        },
+        {
+            "name": "analytics",
+            "description": "Revenue reports, occupancy trends, and business intelligence",
+        },
+        {
+            "name": "profile",
+            "description": "User profile management and preferences",
+        },
+        {
+            "name": "vehicles",
+            "description": "Manage user vehicles with EV and accessibility attributes",
+        },
+        {
+            "name": "navigation",
+            "description": "Indoor navigation paths and car locator services",
+        },
+        {
+            "name": "services",
+            "description": "Add-ons marketplace and EV charger pairing",
+        },
+        {
+            "name": "violations",
+            "description": "Overstay detection, misuse alerts, and violation statistics",
+        },
+        {
+            "name": "carbon",
+            "description": "Carbon footprint tracking and efficiency scoring",
+        },
+        {
+            "name": "health",
+            "description": "System health checks for database and ML agents",
+        },
+        {
+            "name": "ml",
+            "description": "Machine learning model management and predictions",
+        },
+        {
+            "name": "auth",
+            "description": "Authentication and authorization (demo mode)",
+        },
+        {
+            "name": "admin",
+            "description": "Administrative operations and system configuration",
+        },
+    ],
+)
 
 # CORS: allow local provider web app & wildcard for dev if env var not set
 allowed_origins = [

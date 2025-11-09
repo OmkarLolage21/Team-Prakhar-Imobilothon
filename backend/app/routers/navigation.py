@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -21,11 +21,34 @@ class NavPath(BaseModel):
 	nodes: List[NavNode]
 	steps: List[NavStep]
 
-@router.get("/path", response_model=NavPath)
-async def get_path(origin_lat: float, origin_lng: float, slot_id: str, entrance_lat: float | None = None, entrance_lng: float | None = None):
-	"""Return a mocked last-200m indoor-friendly path. If entrance provided, we route to entrance, then to bay in basement.
-
-	This is an MVP stub; in production we'll query indoor graph per location.
+@router.get("/path", response_model=NavPath,
+	summary="Get indoor navigation path",
+	response_description="Step-by-step navigation from origin to parking bay",
+)
+async def get_path(
+	origin_lat: float = Query(..., description="Starting latitude", example=18.5204),
+	origin_lng: float = Query(..., description="Starting longitude", example=73.8567),
+	slot_id: str = Query(..., description="Target parking slot", example="LOT1_S042"),
+	entrance_lat: float | None = Query(None, description="Optional entrance latitude"),
+	entrance_lng: float | None = Query(None, description="Optional entrance longitude"),
+):
+	"""
+	Generate indoor navigation path for the last 200 meters to parking bay.
+	
+	Returns a multi-level path with:
+	- Ground level approach to entrance
+	- Ramp descent through levels (B1, B2, etc.)
+	- Final approach to assigned bay
+	
+	## Path Structure
+	
+	- **nodes**: Geographic waypoints with level information
+	- **steps**: Turn-by-turn instructions with distances
+	
+	## MVP Note
+	
+	Currently returns synthetic paths. Production version will query
+	actual indoor mapping graph per parking facility.
 	"""
 	# Simple synthetic path: origin -> entrance -> ramp -> bay
 	origin = NavNode(id="origin", lat=origin_lat, lng=origin_lng, level="G")
@@ -50,10 +73,30 @@ class LocateRequest(BaseModel):
 	current_lng: float
 	bay_label: str | None = None
 
-@router.post("/locate", response_model=NavPath)
+@router.post("/locate", response_model=NavPath,
+	summary="Locate parked car (panic mode)",
+	response_description="Navigation path from current position to parked vehicle",
+)
 async def locate(req: LocateRequest):
-	"""Return a simple path from current position to the bay location.
-	For MVP we synthesize a basement bay using bay_label if provided.
+	"""
+	Generate path from user's current position to their parked vehicle.
+	
+	## Use Case: Panic Mode / Car Locator
+	
+	When a driver can't remember where they parked:
+	1. Provide current GPS coordinates
+	2. Session bay_label is used to determine vehicle location
+	3. Returns step-by-step path through parking structure
+	
+	## Path Generation
+	
+	Synthesizes realistic multi-level path based on bay label.
+	Production version would use actual vehicle location from session record.
+	
+	Ideal for:
+	- Large multi-level parking facilities
+	- Unfamiliar parking structures
+	- Low-visibility conditions
 	"""
 	origin = NavNode(id="origin", lat=req.current_lat, lng=req.current_lng, level="G")
 	# Fake destination based on label hash for visual variation

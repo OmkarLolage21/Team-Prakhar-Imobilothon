@@ -20,8 +20,32 @@ ADDONS: List[AddOn] = [
 	AddOn(id="a4", code="valet", name="Valet Assist", description="Staff parks vehicle", price_inr=200, category="experience"),
 ]
 
-@router.get("/addons", response_model=List[AddOn])
+@router.get("/addons", response_model=List[AddOn],
+	summary="List available service add-ons",
+	response_description="Marketplace of ancillary services",
+)
 async def list_addons():
+	"""
+	Retrieve available service add-ons for booking enhancement.
+	
+	## Add-on Categories
+	
+	- **care**: Vehicle cleaning and maintenance services
+	- **ev**: Electric vehicle charging options
+	- **experience**: Premium services (valet, concierge)
+	
+	## Integration
+	
+	Add-on IDs can be included in booking creation via `add_on_ids` field.
+	Prices are added to total booking cost.
+	
+	## Example Add-ons
+	
+	- Basic Wash (₹150)
+	- Premium Wash (₹400)
+	- Fast Charge 30m (₹250)
+	- Valet Assist (₹200)
+	"""
 	return ADDONS
 
 class EVPairingRequest(BaseModel):
@@ -36,8 +60,36 @@ class EVPairingResponse(BaseModel):
 	est_time_min: int
 	confidence: float
 
-@router.post("/ev_pair", response_model=EVPairingResponse)
+@router.post("/ev_pair", response_model=EVPairingResponse,
+	summary="Request EV charger pairing",
+	response_description="Predicted charger assignment with schedule",
+)
 async def ev_pair(req: EVPairingRequest):
+	"""
+	Pair an electric vehicle booking with an available charger.
+	
+	## Algorithm (MVP Stub)
+	
+	Returns synthetic pairing with:
+	- Nearest available charger to parking slot
+	- Estimated kWh delivery based on request
+	- Time estimate (assumes ~3 min per kWh for Level 2)
+	- Confidence score for charger availability
+	
+	## Production Enhancement
+	
+	Full implementation would:
+	- Query real charger availability from facility IoT
+	- Consider charger type (Level 2 vs DC Fast)
+	- Schedule based on grid load and pricing
+	- Reserve charger alongside parking slot
+	
+	## Confidence Interpretation
+	
+	- **>0.8**: Charger highly likely to be available
+	- **0.6-0.8**: Moderate confidence, backup suggested
+	- **<0.6**: High contention, consider alternative time
+	"""
 	# Stub: In real system we'd look up chargers near slot and compute schedule
 	# For now return synthetic pairing with modest confidence
 	return EVPairingResponse(
