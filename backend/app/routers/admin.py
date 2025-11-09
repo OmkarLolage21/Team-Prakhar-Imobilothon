@@ -284,3 +284,177 @@ async def patch_db():
         await db.execute(ddl)
         await db.commit()
         return {"patched": ["events_outbox columns", "idx_slot_predictions_slot_eta"]}
+
+
+@router.post("/demo/flow")
+@router.post("/demo/flow/")
+@router.get("/demo/flow")
+@router.get("/demo/flow/")
+async def demo_flow():
+    """Run a full demo flow end-to-end in one call:
+    - Ensure at least one slot exists (seed from memory if needed)
+    - Create a guaranteed booking 30 minutes from now
+    - Start a session, validate (preauth), then end (capture)
+    - Return booking/session ids and recent related outbox events
+    """
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    import uuid, datetime as dt
+    from sqlalchemy import update
+    async with SessionLocal() as db:  # type: ignore
+        # 1) Ensure a slot exists
+        res_slot = await db.execute(select(Slot).limit(1))
+        slot = res_slot.scalar_one_or_none()
+        created_slots = 0
+        if slot is None:
+            to_add = []
+            for s in MEM_SLOTS[:3]:
+                to_add.append(Slot(
+                    slot_id=s["slot_id"],
+                    location_id=None,
+                    cluster_id=s["cluster_id"],
+                    capacity=1,
+                    is_ev=bool(s.get("ev", False)),
+                    is_accessible=bool(s.get("accessible", False)),
+                    base_price=float(s["base_price"]),
+                    dynamic_price=float(s["dynamic_price"]),
+                ))
+            if to_add:
+                db.add_all(to_add)
+                await db.flush()
+                created_slots = len(to_add)
+            res_slot = await db.execute(select(Slot).limit(1))
+            slot = res_slot.scalar_one_or_none()
+        if slot is None:
+            raise HTTPException(status_code=500, detail="No slots available to run demo flow")
+
+        # 2) Create a booking 30 min from now
+        now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+        eta_dt = now + dt.timedelta(minutes=30)
+        booking_id = str(uuid.uuid4())
+        booking = Booking(
+            booking_id=booking_id,
+            user_id=None,
+            slot_id=slot.slot_id,
+            cluster_id=slot.cluster_id or "",
+            eta_minute=eta_dt,
+            mode=BookingMode.guaranteed,
+            status=BookingStatus.confirmed,
+            p_free_at_hold=None,
+        )
+        db.add(booking)
+        db.add(BookingCandidate(
+            booking_id=booking_id,
+            slot_id=slot.slot_id,
+            role="primary",
+            confidence_at_add=None,
+            hold_expires_at=None,
+        ))
+        db.add(EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="booking.created",
+            payload={
+                "booking_id": booking_id,
+                "slot_id": slot.slot_id,
+                "eta_minute": eta_dt.isoformat(),
+                "mode": "guaranteed",
+                "status": BookingStatus.confirmed.value,
+                "created_at": now.isoformat(),
+            },
+        ))
+        await db.flush()
+
+        # 3) Start a session
+        session_id = str(uuid.uuid4())
+        sess = SessionModel(
+            session_id=session_id,
+            booking_id=booking_id,
+            started_at=now,
+            ended_at=None,
+            validation_method=None,
+            bay_label="A-1",
+            grace_ends_at=now + dt.timedelta(minutes=15),
+        )
+        db.add(sess)
+        # Mark booking active (use ORM update to respect UUID typing)
+        await db.execute(
+            update(Booking).where(Booking.booking_id == booking_id).values(status=BookingStatus.active)
+        )
+
+        # 4) Validate (simulate QR) and preauth
+        amount = float(slot.dynamic_price or 0.0)
+        payment_id = str(uuid.uuid4())
+        pay = Payment(
+            payment_id=payment_id,
+            booking_id=booking_id,
+            amount_authorized=amount,
+            amount_captured=None,
+            status=PaymentStatus.preauth_ok,
+        )
+        db.add(pay)
+        db.add(EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="payment.preauth_ok",
+            payload={
+                "booking_id": booking_id,
+                "payment_id": payment_id,
+                "amount_authorized": amount,
+                "at": dt.datetime.utcnow().isoformat(),
+            },
+        ))
+        db.add(EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="session.validated",
+            payload={
+                "session_id": session_id,
+                "booking_id": booking_id,
+                "method": "qr",
+                "bay_label": "A-1",
+                "at": dt.datetime.utcnow().isoformat(),
+            },
+        ))
+
+        # 5) End session and capture
+        end_time = now + dt.timedelta(minutes=5)
+        await db.execute(
+            update(SessionModel).where(SessionModel.session_id == session_id).values(ended_at=end_time)
+        )
+        await db.execute(
+            update(Booking).where(Booking.booking_id == booking_id).values(status=BookingStatus.completed)
+        )
+        await db.execute(
+            update(Payment).where(Payment.payment_id == payment_id).values(amount_captured=amount, status=PaymentStatus.captured)
+        )
+        db.add(EventsOutbox(
+            event_id=str(uuid.uuid4()),
+            event_type="payment.captured",
+            payload={
+                "booking_id": booking_id,
+                "payment_id": payment_id,
+                "amount_captured": amount,
+                "at": dt.datetime.utcnow().isoformat(),
+            },
+        ))
+
+        await db.commit()
+
+        # Return a concise summary and recent events
+        ev_res = await db.execute(
+            select(EventsOutbox).order_by(EventsOutbox.created_at.desc()).limit(10)
+        )
+        evs = ev_res.scalars().all()
+        return {
+            "created_slots": created_slots,
+            "booking_id": booking_id,
+            "session_id": session_id,
+            "slot_id": slot.slot_id,
+            "events": [
+                {
+                    "event_type": e.event_type,
+                    "status": e.status,
+                    "created_at": e.created_at.isoformat(),
+                    "published_at": e.published_at.isoformat() if e.published_at else None,
+                }
+                for e in evs
+            ],
+        }
