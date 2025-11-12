@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ParkingOffer } from '@/types/parking';
-import { searchOffers, type BackendOffer, getLots, type LotItem } from '@/lib/api';
+import { searchOffers, type BackendOffer, getLots, getLotDetail, type LotItem } from '@/lib/api';
 
 // Simple in-memory cache to reuse offers between screens
 let _cache: { offers: ParkingOffer[]; ts: number } | null = null;
@@ -67,22 +67,54 @@ export function useOffers(params?: { lat?: number; lng?: number; eta?: Date; lot
       let mapped = res.map(o => mapOffer(o, lotsList));
       // Fallback: if no predictive offers, use lots as pseudo-offers
       if (mapped.length === 0) {
-        const fallbackLots: LotItem[] = lotsList;
-        mapped = fallbackLots.map(l => ({
-          id: l.id,
-          name: l.name,
-          address: l.name,
-          distance: 0.5,
-          price:  l.capacity ? Math.round( (l.occupancy / Math.max(1,l.capacity)) * 100 ) : 50,
-          currency: '₹',
-          availability: { percentage: l.capacity ? Math.round((1 - l.occupancy / Math.max(1,l.capacity)) * 100) : 50, confidence: 5, trend: 'stable' },
-          features: { ev: true, accessible: true, covered: true, security: true },
-          sla: { hasBackup: true, guaranteedSpot: true },
-          location: { lat: l.latitude ?? lat, lng: l.longitude ?? lng },
-          operatingHours: '24/7',
-          entranceInfo: 'Use main entrance',
-          rules: ['Max 4h parking', 'Validation required'],
-        }));
+        // No predictive offers returned. Build fallback offers based on real slot IDs so bookings succeed.
+        // We'll fetch detail for the first few lots to extract actual slot_ids.
+        const fallbackLots: LotItem[] = lotsList.slice(0, 5);
+        const lotDetails = await Promise.all(
+          fallbackLots.map(l => getLotDetail(l.id).catch(() => null))
+        );
+        const slots: Array<{ slot_id: string; lot: LotItem }> = [];
+        for (let i = 0; i < lotDetails.length; i++) {
+          const d = lotDetails[i];
+            if (d?.slots?.length) {
+              // Pick up to 2 slots per lot to diversify
+              d.slots.slice(0, 2).forEach(s => slots.push({ slot_id: s.slot_id, lot: fallbackLots[i] }));
+            }
+        }
+        if (slots.length === 0) {
+          // Fallback to pseudo-lot offers (will likely 404 on booking if slot_id unknown, but retain previous behavior)
+          mapped = fallbackLots.map(l => ({
+            id: l.id,
+            name: l.name,
+            address: l.name,
+            distance: 0.5,
+            price: l.capacity ? Math.round((l.occupancy / Math.max(1, l.capacity)) * 100) : 50,
+            currency: '₹',
+            availability: { percentage: l.capacity ? Math.round((1 - l.occupancy / Math.max(1, l.capacity)) * 100) : 50, confidence: 5, trend: 'stable' },
+            features: { ev: true, accessible: true, covered: true, security: true },
+            sla: { hasBackup: true, guaranteedSpot: true },
+            location: { lat: l.latitude ?? lat, lng: l.longitude ?? lng },
+            operatingHours: '24/7',
+            entranceInfo: 'Use main entrance',
+            rules: ['Max 4h parking', 'Validation required'],
+          }));
+        } else {
+          mapped = slots.map(s => ({
+            id: s.slot_id,
+            name: s.lot.name,
+            address: s.lot.name,
+            distance: 0.5,
+            price: s.lot.capacity ? Math.round((s.lot.occupancy / Math.max(1, s.lot.capacity)) * 100) : 50,
+            currency: '₹',
+            availability: { percentage: s.lot.capacity ? Math.round((1 - s.lot.occupancy / Math.max(1, s.lot.capacity)) * 100) : 50, confidence: 6, trend: 'stable' },
+            features: { ev: true, accessible: true, covered: true, security: true },
+            sla: { hasBackup: true, guaranteedSpot: true },
+            location: { lat: s.lot.latitude ?? lat, lng: s.lot.longitude ?? lng },
+            operatingHours: '24/7',
+            entranceInfo: 'Use main entrance',
+            rules: ['Max 4h parking', 'Validation required'],
+          }));
+        }
       }
       const now = Date.now();
       _cache = { offers: mapped, ts: now };
