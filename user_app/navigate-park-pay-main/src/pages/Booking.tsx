@@ -13,7 +13,8 @@ import { useVehicles } from "@/hooks/useVehicles";
 const Booking = () => {
   const navigate = useNavigate();
   const { id, type } = useParams();
-  const { offers } = useOffers();
+  // Disable polling here to avoid extra network after confirmation; we only need cached offers for details
+  const { offers } = useOffers({ poll: false });
   const { vehicles, activeVehicle, setActiveVehicleId } = useVehicles();
   const [isProcessing, setIsProcessing] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
@@ -24,9 +25,8 @@ const Booking = () => {
   const offer = offers.find((o) => o.id === id);
   const vehicle = mockVehicles[0]; // legacy placeholder
   const isEVSelected = !!activeVehicle?.isEV;
-  const evCompatible = !!offer.features.ev;
+  const evCompatible = !!offer?.features?.ev;
 
-  if (!offer) return <div>Offer not found</div>;
   if (!offer) return <div>Offer not found</div>;
 
   const toggleAddOn = (id: string) => {

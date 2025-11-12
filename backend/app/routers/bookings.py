@@ -159,19 +159,38 @@ async def recent(
     status_code=201,
 )
 async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
-    # Validate slot exists (DB first, fallback memory)
+    # Validate/resolve slot (DB first). Demo-friendly: if provided id is actually a cluster_id or location_id,
+    # resolve it to a real slot to avoid 404s when UI sends pseudo IDs.
+    target_slot_id: str = req.slot_id
     cluster_id: Optional[str] = None
     try:
-        res = await db.execute(select(Slot.cluster_id).where(Slot.slot_id == req.slot_id))
+        res = await db.execute(select(Slot.cluster_id).where(Slot.slot_id == target_slot_id))
         cluster_id = res.scalar_one_or_none()
+        if cluster_id is None:
+            res2 = await db.execute(
+                select(Slot.slot_id, Slot.cluster_id)
+                .where((Slot.cluster_id == target_slot_id) | (Slot.location_id == target_slot_id))
+                .limit(1)
+            )
+            row = res2.first()
+            if row is not None:
+                target_slot_id = row[0]
+                cluster_id = row[1]
     except SQLAlchemyError:
         cluster_id = None
     if cluster_id is None:
         # fallback to memory
         slot_ids = [s["slot_id"] for s in SLOTS]
-        if req.slot_id not in slot_ids:
-            raise HTTPException(status_code=404, detail="slot not found")
-        cluster_id = next((s["cluster_id"] for s in SLOTS if s["slot_id"] == req.slot_id), None)
+        if target_slot_id in slot_ids:
+            cluster_id = next((s["cluster_id"] for s in SLOTS if s["slot_id"] == target_slot_id), None)
+        else:
+            # try treat as cluster id in memory
+            cluster_match = next((s for s in SLOTS if s["cluster_id"] == target_slot_id), None)
+            if cluster_match is not None:
+                target_slot_id = cluster_match["slot_id"]
+                cluster_id = cluster_match["cluster_id"]
+            else:
+                raise HTTPException(status_code=404, detail="slot not found")
 
     # compute p_free using DB predictions (nearest by time)
     from datetime import datetime, timedelta
@@ -182,14 +201,14 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
     # nearest for primary slot using dual before/after within window
     before_q = await db.execute(
         select(SlotPrediction)
-        .where(SlotPrediction.slot_id == req.slot_id, SlotPrediction.eta_minute <= eta_dt, SlotPrediction.eta_minute >= lower)
+        .where(SlotPrediction.slot_id == target_slot_id, SlotPrediction.eta_minute <= eta_dt, SlotPrediction.eta_minute >= lower)
         .order_by(SlotPrediction.eta_minute.desc())
         .limit(1)
     )
     before = before_q.scalar_one_or_none()
     after_q = await db.execute(
         select(SlotPrediction)
-        .where(SlotPrediction.slot_id == req.slot_id, SlotPrediction.eta_minute >= eta_dt, SlotPrediction.eta_minute <= upper)
+        .where(SlotPrediction.slot_id == target_slot_id, SlotPrediction.eta_minute >= eta_dt, SlotPrediction.eta_minute <= upper)
         .order_by(SlotPrediction.eta_minute.asc())
         .limit(1)
     )
@@ -209,7 +228,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         b = Booking(
             booking_id=booking_id,
             user_id=None,
-            slot_id=req.slot_id,
+            slot_id=target_slot_id,
             cluster_id=cluster_id or "",
             eta_minute=eta_dt,
             mode=mode_enum,
@@ -220,7 +239,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         # primary candidate
         db.add(BookingCandidate(
             booking_id=booking_id,
-            slot_id=req.slot_id,
+            slot_id=target_slot_id,
             role="primary",
             confidence_at_add=p,
             hold_expires_at=None,
@@ -229,7 +248,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         if req.mode == "smart_hold" and p is not None and p < CONFIG.reliability_threshold and cluster_id:
             # choose alternatives in same cluster from DB and rank by nearest prediction probability
             res_slots = await db.execute(
-                select(Slot.slot_id).where(Slot.cluster_id == cluster_id, Slot.slot_id != req.slot_id).limit(50)
+                select(Slot.slot_id).where(Slot.cluster_id == cluster_id, Slot.slot_id != target_slot_id).limit(50)
             )
             alt_ids = [sid for (sid,) in res_slots.all()]
             candidates: List[Dict[str, Any]] = []
@@ -266,7 +285,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         # Outbox event for booking.created (include backups with confidence)
         evt_payload = {
             "booking_id": booking_id,
-            "slot_id": req.slot_id,
+            "slot_id": target_slot_id,
             "eta_minute": req.eta,
             "mode": req.mode,
             "status": status.value,
@@ -283,7 +302,7 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
         return BookingResponse(
             booking_id=booking_id,
-            slot_id=req.slot_id,
+            slot_id=target_slot_id,
             eta_minute=req.eta,
             mode=req.mode,
             status=status.value,
@@ -293,13 +312,13 @@ async def create(req: BookingCreateRequest, db: AsyncSession = Depends(get_db)):
     except SQLAlchemyError as e:
         await db.rollback()
         # Fallback to memory path
-        booking = create_booking(slot_id=req.slot_id, eta_iso=req.eta, mode=req.mode, p_free_at_hold=p)
+        booking = create_booking(slot_id=target_slot_id, eta_iso=req.eta, mode=req.mode, p_free_at_hold=p)
         backups: List[Dict[str, Any]] = []
         if req.mode == "smart_hold" and p is not None and p < CONFIG.reliability_threshold:
             cluster = booking["cluster_id"]
             candidates = []
             for s in SLOTS:
-                if s["slot_id"] == req.slot_id:
+                if s["slot_id"] == target_slot_id:
                     continue
                 if s["cluster_id"] != cluster:
                     continue

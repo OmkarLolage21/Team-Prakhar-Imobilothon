@@ -19,7 +19,8 @@ import { formatINR } from "@/lib/api";
 const OfferDetails = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  const { offers } = useOffers();
+  // No need to poll here; we only render details based on cached offers
+  const { offers } = useOffers({ poll: false });
   const offer = offers.find((o) => o.id === id);
 
   if (!offer) {

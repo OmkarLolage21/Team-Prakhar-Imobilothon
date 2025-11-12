@@ -24,10 +24,11 @@ if sys.platform.startswith("win"):
 
 from app.core.db import SessionLocal
 from app.models import (
-    AppUser, Provider, Location, Slot, 
+    AppUser, Provider, Location, Slot,
     Booking, BookingStatus, BookingMode,
     Session, ValidationMethod,
-    Payment, PaymentStatus
+    Payment, PaymentStatus,
+    SlotPrediction, PredictionBatch
 )
 
 async def seed_all(lite: bool = False):
@@ -243,7 +244,7 @@ async def seed_all(lite: bool = False):
                     db.add(session)
 
                 base_hours = random.uniform(1.5, 3.5)
-                amount = round(slot.dynamic_price * base_hours, 2)
+                amount = round(float(slot.dynamic_price) * base_hours, 2)
                 if status == BookingStatus.cancelled:
                     pay_status = PaymentStatus.cancelled
                     amt_captured = 0.0
@@ -280,6 +281,56 @@ async def seed_all(lite: bool = False):
         print(f"✓ Created {len(bookings)} bookings")
         print(f"✓ Created {len(sessions)} sessions")
         print(f"✓ Created {len(payments)} payments")
+
+        # 7. Predictive data (seed simple probabilities for demo UX)
+        print("\n🔮 Seeding predictive availability (demo) ...")
+        horizon_min = 120 if not lite else 60
+        step_min = 15
+        etas = [now_utc + timedelta(minutes=m) for m in range(step_min, horizon_min + 1, step_min)]
+        # Create a batch record
+        batch = PredictionBatch(batch_id=str(uuid4()), model_version="demo_seed", generated_at=now_utc, horizon_min=horizon_min, quality="seeded")
+        db.add(batch)
+        await db.commit()
+
+        values = []
+        for slot in slots:
+            # Use price to shape probability (cheaper → higher p_free) with light randomness
+            base_price = float(slot.base_price)
+            dyn_price = float(slot.dynamic_price)
+            price_factor = max(0.8, min(1.2, dyn_price / max(1.0, base_price)))
+            for eta in etas:
+                # Base around 0.7 with variation from price and time-of-day
+                tod = eta.hour
+                peak = 1.0 if 9 <= tod <= 12 or 17 <= tod <= 20 else 0.0
+                noise = (random.random() - 0.5) * 0.1
+                p = 0.75 - 0.15 * peak - 0.1 * (price_factor - 1.0) + noise
+                p = max(0.1, min(0.95, p))
+                values.append({
+                    "slot_id": slot.slot_id,
+                    "eta_minute": eta,
+                    "p_free": p,
+                    "conf_low": max(0.05, p - 0.05),
+                    "conf_high": min(0.99, p + 0.05),
+                    "model_version": "demo_seed",
+                    "batch_id": batch.batch_id,
+                })
+        # Bulk insert with ON CONFLICT upsert behavior
+        if values:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            stmt = pg_insert(SlotPrediction).values(values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[SlotPrediction.slot_id, SlotPrediction.eta_minute],
+                set_={
+                    "p_free": stmt.excluded.p_free,
+                    "conf_low": stmt.excluded.conf_low,
+                    "conf_high": stmt.excluded.conf_high,
+                    "model_version": stmt.excluded.model_version,
+                    "batch_id": stmt.excluded.batch_id,
+                },
+            )
+            await db.execute(stmt)
+            await db.commit()
+            print(f"✓ Seeded {len(values)} slot_predictions across {len(slots)} slots and {len(etas)} time steps")
 
         print("\n✅ Database seeded successfully!")
         print("\n📊 Summary:")

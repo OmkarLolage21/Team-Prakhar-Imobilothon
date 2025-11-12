@@ -15,7 +15,7 @@ const Offers = () => {
   const [selectedOfferId, setSelectedOfferId] = useState<string | undefined>(undefined);
   const [eta, setEta] = useState<string | null>(null);
   const [origin, setOrigin] = useState<{lat:number; lng:number} | undefined>(undefined);
-  const { offers, loading, error, refetch } = useOffers({ lotId: locationId });
+  const { offers, loading, error, refetch, lastUpdated } = useOffers({ lotId: locationId });
   const { activeVehicle } = useVehicles();
   const filteredOffers = (activeVehicle?.isEV ? offers.filter(o => o.features.ev) : offers);
 
@@ -86,6 +86,7 @@ const Offers = () => {
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
               {loading ? "Loading offers..." : `${filteredOffers.length} options found${activeVehicle?.isEV ? ' (EV-ready)' : ''}`}
+              {lastUpdated ? <span className="ml-2 text-xs">Updated {new Date(lastUpdated).toLocaleTimeString()}</span> : null}
               {error && <span className="text-destructive ml-2">{error}</span>}
             </p>
             <div className="flex gap-2">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ParkingOffer } from '@/types/parking';
 import { searchOffers, type BackendOffer, getLots, type LotItem } from '@/lib/api';
 
@@ -27,28 +27,48 @@ function mapOffer(o: BackendOffer, lots?: LotItem[]): ParkingOffer {
   };
 }
 
-export function useOffers(params?: { lat?: number; lng?: number; eta?: Date; lotId?: string }) {
+export function useOffers(params?: { lat?: number; lng?: number; eta?: Date; lotId?: string; poll?: boolean; refreshMs?: number }) {
   const [offers, setOffers] = useState<ParkingOffer[]>(_cache?.offers ?? []);
   const [loading, setLoading] = useState(!_cache);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number>(_cache?.ts ?? 0);
 
   const lat = params?.lat ?? 12.9716;
   const lng = params?.lng ?? 77.5946;
-  const etaIso = (params?.eta ?? new Date(Date.now() + 30 * 60000)).toISOString();
+  // Stabilize ETA for the lifetime of this hook instance to avoid re-renders triggering refetches/interval churn
+  const initialEtaIsoRef = useRef<string>();
+  if (!initialEtaIsoRef.current) {
+    initialEtaIsoRef.current = (params?.eta ?? new Date(Date.now() + 30 * 60000)).toISOString();
+  }
+  const etaIso = initialEtaIsoRef.current;
+  const poll = params?.poll ?? true;
+  const refreshMs = params?.refreshMs ?? 5 * 60 * 1000;
+
+  // Prevent overlapping fetches
+  const inFlightRef = useRef(false);
+  // Track page visibility to pause polling when tab is hidden
+  const visibleRef = useRef<boolean>(typeof document === 'undefined' ? true : !document.hidden);
+  useEffect(() => {
+    const onVis = () => { visibleRef.current = !document.hidden; };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
 
   async function fetchOffers() {
     try {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       setLoading(true);
       setError(null);
-      const [res, lots] = await Promise.all([
+      const [res, lotsList] = await Promise.all([
         searchOffers(lat, lng, etaIso),
         getLots().catch(() => [] as LotItem[]),
       ]);
-      let mapped = res.map(o => mapOffer(o, lots));
+      let mapped = res.map(o => mapOffer(o, lotsList));
       // Fallback: if no predictive offers, use lots as pseudo-offers
       if (mapped.length === 0) {
-        const lots: LotItem[] = await getLots();
-        mapped = lots.map(l => ({
+        const fallbackLots: LotItem[] = lotsList;
+        mapped = fallbackLots.map(l => ({
           id: l.id,
           name: l.name,
           address: l.name,
@@ -64,21 +84,32 @@ export function useOffers(params?: { lat?: number; lng?: number; eta?: Date; lot
           rules: ['Max 4h parking', 'Validation required'],
         }));
       }
-      _cache = { offers: mapped, ts: Date.now() };
+      const now = Date.now();
+      _cache = { offers: mapped, ts: now };
       setOffers(mapped);
+      setLastUpdated(now);
     } catch (e: any) {
       setError(e?.message || 'Failed to load offers');
     } finally {
       setLoading(false);
+      inFlightRef.current = false;
     }
   }
 
   useEffect(() => {
     void fetchOffers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lat, lng, etaIso, params?.lotId]);
+  }, [lat, lng, params?.lotId]);
 
-  return { offers, loading, error, refetch: fetchOffers };
+  // Auto-refresh every 5 minutes while on the page
+  useEffect(() => {
+    if (!poll) return;
+    const id = setInterval(() => { if (visibleRef.current) { void fetchOffers(); } }, refreshMs);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poll, refreshMs, lat, lng, params?.lotId]);
+
+  return { offers, loading, error, refetch: fetchOffers, lastUpdated };
 }
 
 export function findOfferById(offers: ParkingOffer[], id?: string) {
