@@ -126,10 +126,17 @@ allowed_origins = [
     "http://127.0.0.1:8080",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    # Deployed frontends
+    "https://user-app-teamprakhar-demo.netlify.app",
+    "https://provider-app-teamprakhar-demo.vercel.app",
 ]
 extra_origin = getattr(settings, "frontend_origin", None)
 if extra_origin and extra_origin not in allowed_origins:
     allowed_origins.append(extra_origin)
+if settings.frontend_origins:
+    for origin in [o.strip() for o in settings.frontend_origins.split(",") if o.strip()]:
+        if origin not in allowed_origins:
+            allowed_origins.append(origin)
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,7 +148,7 @@ app.add_middleware(
     max_age=600,
 )
 
-# Load model at startup
+# Load model at startup (may be disabled in production / free tier)
 @app.on_event("startup")
 async def _startup():
     model_service.load()

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     api_name: str = "Parking Predictive Marketplace API"
     api_version: str = "0.1.0"
     model_path: str = "backend/model/xgb_model_reduced.pkl"  # relative to project root
+    disable_model: bool = False  # when true, skip loading ML model (use DB seeded predictions)
     jwt_secret: str = "dev_secret_change"  # replace with env var in production
     jwt_algo: str = "HS256"
     # Database & Kafka (set via .env)
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
     db_disable_ssl_verify: bool = False  # if true, disable SSL hostname verification (use with care)
     kafka_bootstrap_servers: str | None = None  # e.g. localhost:9092 or cloud brokers
     kafka_client_id: str = "parking-api"
+    # Frontend CORS origins (comma-separated list). Example:
+    # FRONTEND_ORIGINS="https://user-app.example,https://provider-app.example"
+    frontend_origins: str | None = None
     
     if _USE_SETTINGS_CONFIG:
         # Prefer backend/.env but allow project root .env as fallback

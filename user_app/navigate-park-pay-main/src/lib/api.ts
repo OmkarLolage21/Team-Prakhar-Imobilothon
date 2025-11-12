@@ -106,6 +106,17 @@ export async function searchOffers(lat: number, lng: number, etaIso: string): Pr
   return handle<BackendOffer[]>(await fetch(u.toString()));
 }
 
+// ML status (for showing banner when model is disabled on free tier)
+export interface ModelStatus { model_loaded: boolean; disabled_reason?: string | null; model_version?: string | null }
+export async function getModelStatus(): Promise<ModelStatus> {
+  try{
+    return await handle<ModelStatus>(await fetch(url('/ml/status')));
+  }catch{
+    // if endpoint unavailable, assume not loaded in prod
+    return { model_loaded: false, disabled_reason: 'Model not available', model_version: null };
+  }
+}
+
 export async function createBooking(
   slot_id: string,
   etaIso: string,
